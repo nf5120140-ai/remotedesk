@@ -33,8 +33,12 @@ class ViewerActivity : Activity() {
     private val REQ_FILE = 7
     @Volatile private var inSession = false
 
-    private fun baseUrl(): String =
-        cfg.server.replace("wss://", "https://").replace("ws://", "http://").trimEnd('/') + "/"
+    private var serverIdx = 0
+
+    private fun baseUrl(): String {
+        val list = cfg.serverCandidates()
+        return list[serverIdx % list.size].replace("wss://", "https://").replace("ws://", "http://").trimEnd('/') + "/"
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,13 +60,29 @@ class ViewerActivity : Activity() {
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val u = request.url
-                if (u.host == Uri.parse(baseUrl()).host) return false
+                if (cfg.serverCandidates().any { Uri.parse(it.replace("wss://", "https://")).host == u.host }) return false
                 try { startActivity(Intent(Intent.ACTION_VIEW, u)) } catch (_: Exception) {}
                 return true
             }
 
+            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest,
+                                             errorResponse: android.webkit.WebResourceResponse) {
+                // a filter block page (e.g. 418/403) on the main address -> try the other address
+                if (request.isForMainFrame && errorResponse.statusCode in listOf(403, 418, 451, 502, 503) &&
+                    serverIdx + 1 < cfg.serverCandidates().size) {
+                    serverIdx++
+                    view.loadUrl(baseUrl())
+                }
+            }
+
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 if (!request.isForMainFrame) return
+                if (serverIdx + 1 < cfg.serverCandidates().size) {     // try the other address
+                    serverIdx++
+                    view.loadUrl(baseUrl())
+                    return
+                }
+                serverIdx = 0
                 view.loadDataWithBaseURL(null, offlinePage(), "text/html", "utf-8", null)
             }
         }

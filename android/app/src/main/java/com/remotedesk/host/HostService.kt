@@ -86,6 +86,8 @@ class HostService : Service() {
     private var ws: WebSocket? = null
     private var stopped = false
     private var backoff = 1000L
+    private var serverIdx = 0
+    private var registered = false
     @Volatile private var chan: SecureChannel? = null
     private var pendingNonce: String? = null
     private var peerIp = "?"
@@ -230,8 +232,11 @@ class HostService : Service() {
     private fun connect() {
         if (stopped) return
         status("מתחבר לשרת...", false)
+        val list = cfg.serverCandidates()
+        val url = list[serverIdx % list.size]
+        registered = false
         val req = try {
-            Request.Builder().url(cfg.server).build()
+            Request.Builder().url(url).build()
         } catch (e: Exception) {
             status("כתובת שרת לא תקינה", false)
             return
@@ -267,6 +272,7 @@ class HostService : Service() {
 
     private fun disconnected() {
         ws = null
+        if (!registered) serverIdx++          // this address failed - try the next alias
         endSession()
         if (stopped) return
         status("לא מחובר לשרת - מנסה שוב...", false)
@@ -284,6 +290,7 @@ class HostService : Service() {
         when (m.optString("type")) {
             "registered" -> {
                 backoff = 1000L
+                registered = true
                 status(if (projection == null) "מחובר · יש להפעיל שיתוף מסך" else "מוכן - ממתין לחיבורים", true)
             }
             "error" -> {

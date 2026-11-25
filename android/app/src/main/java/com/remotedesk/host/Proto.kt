@@ -175,8 +175,15 @@ class Config(ctx: Context) {
     }
 
     var server: String
-        get() = p.getString("server", DEFAULT_SERVER) ?: DEFAULT_SERVER
+        get() {
+            val v = p.getString("server", DEFAULT_SERVER) ?: DEFAULT_SERVER
+            return if (v in OLD_DEFAULTS) DEFAULT_SERVER else v
+        }
         set(v) = p.edit().putString("server", v).apply()
+
+    /** Configured address first, then other addresses of the same relay. */
+    fun serverCandidates(): List<String> =
+        if (server in ALIASES) (listOf(server) + ALIASES).distinct() else listOf(server)
     var id: String
         get() = p.getString("id", "") ?: ""
         set(v) = p.edit().putString("id", v).apply()
@@ -216,7 +223,9 @@ class Config(ctx: Context) {
     }
 
     companion object {
-        const val DEFAULT_SERVER = "wss://remotedesk-relay-tdfv.onrender.com"
+        const val DEFAULT_SERVER = "wss://remote.naftalikempe.com"
+        val ALIASES = listOf("wss://remote.naftalikempe.com", "wss://remotedesk-relay-tdfv.onrender.com")
+        val OLD_DEFAULTS = setOf("wss://remotedesk-relay-tdfv.onrender.com")
 
         fun newId(): String = (SecureRandom().nextInt(900_000_000) + 100_000_000).toString()
 

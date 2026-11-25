@@ -33,8 +33,38 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect as ws_connect
 
-DEFAULT_SERVER = "wss://remotedesk-relay-tdfv.onrender.com"
-OLD_DEFAULT_SERVERS = ("ws://localhost:8765",)
+DEFAULT_SERVER = "wss://remote.naftalikempe.com"
+# Other addresses of the SAME relay service. If the main address is blocked
+# (e.g. by an internet filter) or unreachable, these are tried automatically.
+RELAY_ALIASES = ("wss://remote.naftalikempe.com", "wss://remotedesk-relay-tdfv.onrender.com")
+OLD_DEFAULT_SERVERS = ("ws://localhost:8765", "wss://remotedesk-relay-tdfv.onrender.com")
+_last_good = {}
+
+
+def relay_candidates(server):
+    """The configured address first (or the one that worked last time), then its aliases."""
+    if server not in RELAY_ALIASES:
+        return [server]
+    order = [_last_good.get("url", server), server] + list(RELAY_ALIASES)
+    seen, out = set(), []
+    for u in order:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def connect_relay(server, **kw):
+    """Open a websocket to the relay, falling back to its other addresses."""
+    last = None
+    for url in relay_candidates(server):
+        try:
+            ws = ws_connect(url, **kw)
+            _last_good["url"] = url
+            return ws
+        except Exception as e:          # blocked / DNS / down -> try the next address
+            last = e
+    raise last
 IS_WIN = sys.platform == "win32"
 if IS_WIN:
     CONFIG_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "RemoteDesk"
@@ -536,7 +566,7 @@ class HostService(threading.Thread):
                 continue
             try:
                 self.on_status("מתחבר לשרת...", False)
-                with ws_connect(self.cfg["server"], max_size=16 * 1024 * 1024,
+                with connect_relay(self.cfg["server"], max_size=16 * 1024 * 1024,
                                 open_timeout=10, ping_interval=20, ping_timeout=40) as ws:
                     self.ws = ws
                     ws.send(json.dumps({"type": "register", "id": self.cfg["id"],
@@ -873,7 +903,7 @@ class ViewerSession(threading.Thread):
         method: "password" | "trust" (saved computer) | "request" (ask the
         other side to approve). on_code(code) is called while waiting for
         approval so the user can compare the verification code."""
-        self.ws = ws_connect(self.server, max_size=16 * 1024 * 1024, open_timeout=10,
+        self.ws = connect_relay(self.server, max_size=16 * 1024 * 1024, open_timeout=10,
                              ping_interval=20, ping_timeout=40)
         ws = self.ws
         ws.send(json.dumps({"type": "connect", "id": self.host_id}))
