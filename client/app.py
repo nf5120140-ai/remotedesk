@@ -514,6 +514,10 @@ class App(tk.Tk):
                 self.after(0, lambda: self.update_btn.config(text=T(f"מוריד עדכון... {pct}%")))
 
         def work():
+            if updater.already_installed(self.update_info, exe):
+                # the service already installed it - just restart this window
+                self.after(0, self.restart_after_update)
+                return
             try:
                 new = exe.with_suffix(".new")
                 updater.download(self.update_info, new, progress)

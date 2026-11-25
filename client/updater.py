@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -79,12 +80,34 @@ def download(info, dest: Path, progress=None):
     os.replace(tmp, dest)
 
 
+def file_sha256(path: Path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def already_installed(info, exe: Path):
+    """True if the exe on disk is already the new release (e.g. the service
+    updated it while this window was open)."""
+    try:
+        expected = _get(info[2]).decode().split()[0].strip().lower()
+        return file_sha256(exe) == expected
+    except Exception:
+        return False
+
+
 def swap_in(new_exe: Path, target: Path):
-    """Replace the running exe. Windows allows renaming (not overwriting) a
-    running exe, so: target -> .old, new -> target."""
+    """Replace the running exe. Windows allows renaming (not overwriting or
+    deleting) a running exe, so: target -> .old, new -> target. A previous
+    .old may itself still be running (an older window) - then use a new name."""
     old = target.with_suffix(".old")
-    old.unlink(missing_ok=True)
-    os.replace(target, old)
+    try:
+        old.unlink(missing_ok=True)
+    except OSError:
+        old = target.with_name(f"{target.stem}.{int(time.time())}.old")
+    os.replace(target, old)              # renaming a running exe is allowed
     try:
         os.replace(new_exe, target)
     except OSError:
@@ -93,9 +116,8 @@ def swap_in(new_exe: Path, target: Path):
 
 
 def cleanup_old(exe: Path):
-    try:
-        exe.with_suffix(".old").unlink(missing_ok=True)
-        exe.with_suffix(".new").unlink(missing_ok=True)
-        exe.with_suffix(".part").unlink(missing_ok=True)
-    except OSError:
-        pass
+    for p in list(exe.parent.glob(exe.stem + "*.old")) + [exe.with_suffix(".new"), exe.with_suffix(".part")]:
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass                      # still running - removed next time
