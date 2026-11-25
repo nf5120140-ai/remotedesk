@@ -30,7 +30,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect as ws_connect
 
-DEFAULT_SERVER = "ws://localhost:8765"
+DEFAULT_SERVER = "wss://remotedesk-relay-tdfv.onrender.com"
+OLD_DEFAULT_SERVERS = ("ws://localhost:8765",)
 IS_WIN = sys.platform == "win32"
 if IS_WIN:
     CONFIG_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "RemoteDesk"
@@ -102,6 +103,9 @@ def load_config():
         if k not in cfg:
             cfg[k] = v
             changed = True
+    if cfg.get("server") in OLD_DEFAULT_SERVERS:   # upgrade old default
+        cfg["server"] = DEFAULT_SERVER
+        changed = True
     if cfg.get("password"):              # migrate old plaintext password
         set_password(cfg, cfg.pop("password"), save=False)
         changed = True
