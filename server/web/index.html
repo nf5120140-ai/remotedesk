@@ -238,8 +238,17 @@ class Session {
   // opts: {method: "password"|"trust"|"request", password, trustKey, remember, onCode}
   async connect(id, opts) {
     const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/";
-    const ws = this.ws = new WebSocket(url);
-    ws.binaryType = "arraybuffer";
+    // the free server may be waking up / restarting: retry a few times
+    let ws;
+    for (let attempt = 1; ; attempt++) {
+      ws = this.ws = new WebSocket(url);
+      ws.binaryType = "arraybuffer";
+      const ok = await new Promise((res) => { ws.onopen = () => res(true); ws.onerror = () => res(false); });
+      if (ok) break;
+      if (this.cancelled || attempt >= 6) throw new AuthError("אין חיבור לשרת. בדוק את האינטרנט, או שסינון התוכן חוסם את החיבור", "network");
+      opts.onRetry && opts.onRetry(attempt);
+      await new Promise((r) => setTimeout(r, 4000));
+    }
     ws.onmessage = (ev) => {
       if (typeof ev.data === "string") { if (this.waiter) { const w = this.waiter; this.waiter = null; w(ev.data); } }
       else if (this.aes) this.onBinary(ev.data);
@@ -249,7 +258,6 @@ class Session {
       if (this.aes && !this.closed) { this.closed = true; this.h.onClosed(this.byeReason || "החיבור נסגר"); }
       this.closed = true;
     };
-    await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error("אין חיבור לשרת")); });
     const method = opts.method;
     const keyP = method === "password" ? deriveKey(opts.password, id) : null;   // start PBKDF2 early
     const first = this.recvText();
@@ -389,6 +397,7 @@ async function start(id, opts) {
   $("err").textContent = "";
   busy(true);
   const s = pending = new Session({ onFrame, onMessage, onClosed });
+  opts.onRetry = (n) => { $("err").textContent = `השרת מתעורר, מנסה שוב... (${n}/5)`; };
   if (opts.method === "request") {
     $("code").textContent = "··· ···"; $("waiting").style.display = "flex";
     opts.onCode = (c) => { $("code").textContent = c; };
