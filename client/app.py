@@ -16,6 +16,7 @@ import os
 import queue
 import sys
 import threading
+from pathlib import Path
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -23,6 +24,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from PIL import Image, ImageTk
 
 import core
+import updater
 import winsvc
 
 APP_NAME = "RemoteDesk"
@@ -322,6 +324,15 @@ class App(tk.Tk):
         ttk.Entry(box4, textvariable=self.server_var, width=42).pack(side="right", padx=6)
         ttk.Button(box4, text=T("החל"), command=self.save_server).pack(side="right")
 
+        # ---------------- Version / updates
+        box5 = ttk.Frame(root)
+        box5.pack(fill="x", pady=(10, 0))
+        self.version_label = ttk.Label(box5, text=T(f"גרסה {updater.VERSION}"), foreground="gray")
+        self.version_label.pack(side="right")
+        self.update_btn = ttk.Button(box5, text="", command=self.do_update)
+        self.update_info = None
+        threading.Thread(target=self.check_update, daemon=True).start()
+
         self.host = None
         self.service_mode = None
         self.refresh_mode()
@@ -410,6 +421,63 @@ class App(tk.Tk):
                 error(str(e))
         elif self.host:
             threading.Thread(target=self.host.kick, daemon=True).start()
+
+    # ---------------------------------------------------------------- updates
+    def check_update(self):
+        if not updater.enabled():
+            return
+        try:
+            info = updater.check()
+        except Exception:
+            return
+        self.after(0, self.show_update, info)
+
+    def show_update(self, info):
+        if info is None:
+            self.version_label.config(text=T(f"גרסה {updater.VERSION} · מעודכנת ✓"))
+            return
+        self.update_info = info
+        if self.service_mode:
+            # the service installs it by itself within a few hours (or right away on restart)
+            self.version_label.config(text=T(f"גרסה {updater.VERSION} · גרסה {info[0]} תותקן אוטומטית"))
+        self.update_btn.config(text=T(f"עדכן עכשיו לגרסה {info[0]}"))
+        self.update_btn.pack(side="left")
+
+    def do_update(self):
+        if not self.update_info:
+            return
+        self.update_btn.config(state="disabled", text=T("מוריד עדכון..."))
+        exe = Path(sys.executable)
+
+        def progress(done, total):
+            if total:
+                pct = int(done * 100 / total)
+                self.after(0, lambda: self.update_btn.config(text=T(f"מוריד עדכון... {pct}%")))
+
+        def work():
+            try:
+                new = exe.with_suffix(".new")
+                updater.download(self.update_info, new, progress)
+                if self.service_mode:
+                    winsvc.uninstall_service_for_update()
+                updater.swap_in(new, exe)
+                if self.service_mode:
+                    winsvc.start_service()
+            except Exception as e:
+                self.after(0, error, f"העדכון נכשל: {e}")
+                self.after(0, lambda: self.update_btn.config(state="normal",
+                                                             text=T(f"עדכן עכשיו לגרסה {self.update_info[0]}")))
+                return
+            self.after(0, self.restart_after_update)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def restart_after_update(self):
+        import subprocess
+        if self.host:
+            self.host.stop()
+        subprocess.Popen([sys.executable], close_fds=True)
+        self.destroy()
 
     # ---------------------------------------------------------------- actions
     def copy_id(self):

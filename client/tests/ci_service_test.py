@@ -84,4 +84,6 @@ time.sleep(2)
 r = subprocess.run([str(EXE), "--uninstall-service"], timeout=120)
 print("uninstall exit code:", r.returncode)
 dump_logs()
+log = (core.CONFIG_DIR / "service.log").read_text("utf-8", "replace")
+assert "service started (version 1.0." in log, "version not stamped into exe"
 print("PASS")

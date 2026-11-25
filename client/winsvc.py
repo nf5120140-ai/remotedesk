@@ -152,7 +152,75 @@ def _launch_agent_in_session(session_id):
         env, str(Path(sys.executable).parent), si)
     ht.Close()
     log(f"agent started pid={pid} session={session_id}")
+    try:
+        import core
+        (core.CONFIG_DIR / "agent.pid").write_text(str(pid))
+    except Exception:
+        pass
     return hp
+
+
+def _kill_stale_agent():
+    """After a service restart (e.g. an update) an old agent may still run."""
+    try:
+        import core
+        import win32api
+        import win32con
+        import win32process
+        pid = int((core.CONFIG_DIR / "agent.pid").read_text())
+        h = win32api.OpenProcess(win32con.PROCESS_TERMINATE | win32con.PROCESS_QUERY_INFORMATION
+                                 | win32con.PROCESS_VM_READ, False, pid)
+        name = win32process.GetModuleFileNameEx(h, 0)
+        if Path(name).name.lower() == "remotedesk.exe":
+            win32api.TerminateProcess(h, 0)
+            log(f"terminated stale agent pid={pid}")
+        win32api.CloseHandle(h)
+    except Exception:
+        pass
+
+
+def _session_active():
+    try:
+        import core
+        return bool(json.loads(core.STATUS_FILE.read_text("utf-8")).get("session"))
+    except Exception:
+        return False
+
+
+class _AutoUpdater(threading.Thread):
+    """Checks GitHub Releases every few hours; when a verified new exe is in
+    place it sets `ready` and the supervisor restarts the service."""
+    FIRST_DELAY = 120
+    INTERVAL = 6 * 3600
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.ready = threading.Event()
+
+    def run(self):
+        import updater
+        if not updater.enabled():
+            log(f"auto-update disabled (version {updater.VERSION})")
+            return
+        exe = Path(sys.executable)
+        updater.cleanup_old(exe)
+        time.sleep(self.FIRST_DELAY)
+        while not self.ready.is_set():
+            try:
+                info = updater.check()
+                if info and not _session_active():
+                    log(f"updating {updater.VERSION} -> {info[0]}")
+                    new = exe.with_suffix(".new")
+                    updater.download(info, new)
+                    while _session_active():          # never interrupt a live session
+                        time.sleep(30)
+                    updater.swap_in(new, exe)
+                    log(f"update {info[0]} installed, restarting")
+                    self.ready.set()
+                    return
+            except Exception as e:
+                log(f"update check failed: {e!r}")
+            time.sleep(self.INTERVAL)
 
 
 def _supervise(stop_event):
@@ -167,8 +235,26 @@ def _supervise(stop_event):
     sa.SECURITY_DESCRIPTOR = sd
     sas_event = win32event.CreateEvent(sa, False, False, SAS_EVENT)
     proc, sess = None, None
-    log("service started")
+    try:
+        import updater
+        ver = updater.VERSION
+    except Exception:
+        ver = "?"
+    log(f"service started (version {ver})")
+    _kill_stale_agent()
+    upd = _AutoUpdater()
+    upd.start()
     while True:
+        if upd.ready.is_set():
+            # new exe is in place: stop the agent and exit abnormally so the
+            # Service Control Manager restarts us (failure action) on the new exe
+            if proc is not None:
+                try:
+                    win32api.TerminateProcess(proc, 0)
+                except Exception:
+                    pass
+            log("restarting for update")
+            os._exit(1)
         r = win32event.WaitForMultipleObjects([stop_event, sas_event], False, 2000)
         if r == win32event.WAIT_OBJECT_0:
             break
@@ -269,6 +355,20 @@ def install_service():
     r = _sc("start", SERVICE_NAME)
     if r.returncode != 0 and "1056" not in r.stdout:
         raise RuntimeError(r.stdout + r.stderr)
+
+
+def uninstall_service_for_update():
+    """Stop (not delete) the service so its exe can be swapped by the GUI."""
+    _sc("stop", SERVICE_NAME)
+    for _ in range(30):
+        if service_state() != "running":
+            break
+        time.sleep(0.5)
+    _kill_stale_agent()
+
+
+def start_service():
+    _sc("start", SERVICE_NAME)
 
 
 def uninstall_service():
