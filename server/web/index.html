@@ -89,6 +89,13 @@
 <div id="login">
   <div class="card">
     <div class="logo"><img src="icon-192.png" alt=""><h1>RemoteDesk</h1></div>
+    <div id="phone-box" style="display:none">
+      <button id="phone-btn" class="saved-item" type="button" style="width:100%;margin-bottom:14px;font:inherit;color:inherit">
+        <span>📱</span>
+        <span class="nm">הטלפון הזה<br><span id="phone-state" style="font-weight:400;font-size:13px;color:var(--muted)"></span></span>
+        <span class="id" id="phone-id"></span>
+      </button>
+    </div>
     <div id="saved-box" style="display:none">
       <p class="section-title">מחשבים שמורים - נגיעה ונכנסים בלי סיסמה</p>
       <div id="saved"></div>
@@ -104,7 +111,7 @@
       <button id="ask" class="secondary" type="button">🔔 בקש אישור מהצד השני (בלי סיסמה)</button>
       <div id="err"></div>
     </form>
-    <div class="hint">החיבור מוצפן מקצה לקצה 🔒<br>
+    <div class="hint" id="hint">החיבור מוצפן מקצה לקצה 🔒<br>
       להוספה למסך הבית: בתפריט הדפדפן ← "הוסף למסך הבית"</div>
   </div>
 </div>
@@ -570,6 +577,7 @@ function toast(text, ms = 1800) {
 }
 
 function startSession() {
+  if (window.RemoteDeskApp) window.RemoteDeskApp.setInSession(true);
   $("login").style.display = "none";
   $("session").style.display = "flex";
   view = { zoom: 1, ox: 0, oy: 0 };
@@ -580,6 +588,7 @@ function startSession() {
   try { screen.orientation && screen.orientation.unlock && screen.orientation.unlock(); } catch {}
 }
 function endSession() {
+  if (window.RemoteDeskApp) window.RemoteDeskApp.setInSession(false);
   if (session) { session.close(); session = null; }
   $("session").style.display = "none";
   $("login").style.display = "flex";
@@ -843,6 +852,30 @@ let wakeLock = null;
 async function keepAwake() { try { if (session && navigator.wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => { wakeLock = null; }); } } catch {} }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") keepAwake(); });
 setInterval(() => { if (session && !wakeLock) keepAwake(); }, 5000);
+
+// ---- inside the Android app (WebView with window.RemoteDeskApp)
+const APP = window.RemoteDeskApp || null;
+function refreshPhoneBox() {
+  if (!APP) return;
+  $("phone-box").style.display = "block";
+  $("phone-id").textContent = APP.phoneId();
+  const st = APP.phoneStatus();
+  $("phone-state").textContent = st === "ready" ? "✅ אפשר לשלוט בטלפון הזה מרחוק"
+    : st === "partial" ? "⚠ יש להשלים את ההגדרה - לחץ כאן" : "שליטה בטלפון כבויה - לחץ להגדרה";
+}
+if (APP) {
+  $("hint").textContent = "החיבור מוצפן מקצה לקצה 🔒";
+  $("b-full").style.display = "none";
+  $("phone-btn").onclick = () => APP.openPhoneSettings();
+  refreshPhoneBox();
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshPhoneBox(); });
+}
+// Android "back" button: returns true if handled here
+window.appBack = () => {
+  if ($("waiting").style.display === "flex") { if (pending) pending.cancel(); $("waiting").style.display = "none"; busy(false); return true; }
+  if ($("session").style.display === "flex") { if (confirm("לנתק את החיבור?")) endSession(); return true; }
+  return false;
+};
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 </script>
