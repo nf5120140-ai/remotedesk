@@ -46,6 +46,21 @@
   #recent { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; justify-content: center; }
   #recent button { direction: ltr; border: 1px solid var(--border); background: var(--bg); color: var(--text);
     border-radius: 999px; padding: 6px 12px; font-size: 14px; }
+  #saved { display: flex; flex-direction: column; gap: 8px; margin-bottom: 6px; }
+  .saved-item { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px 14px; background: var(--bg); cursor: pointer; }
+  .saved-item .nm { flex: 1; font-weight: 600; font-size: 16px; }
+  .saved-item .id { direction: ltr; color: var(--muted); font-size: 13px; }
+  .saved-item .x { border: 0; background: transparent; color: var(--muted); font-size: 18px; padding: 4px 8px; }
+  .section-title { font-size: 14px; color: var(--muted); margin: 0 0 8px; }
+  .check { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 15px; color: var(--text); }
+  .check input { width: 20px; height: 20px; accent-color: var(--red); }
+  .secondary { width: 100%; margin-top: 10px; padding: 12px; font-size: 16px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--card); color: var(--text); }
+  #waiting { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); align-items: center;
+    justify-content: center; padding: 16px; z-index: 5; }
+  #waiting .card { text-align: center; }
+  #code { direction: ltr; font: 700 40px ui-monospace, Menlo, Consolas, monospace; color: var(--red); margin: 10px 0; }
   .hint { color: var(--muted); font-size: 13px; text-align: center; margin-top: 18px; line-height: 1.5; }
 
   /* ---------- session screen ---------- */
@@ -74,18 +89,32 @@
 <div id="login">
   <div class="card">
     <div class="logo"><img src="icon-192.png" alt=""><h1>RemoteDesk</h1></div>
+    <div id="saved-box" style="display:none">
+      <p class="section-title">מחשבים שמורים - נגיעה ונכנסים בלי סיסמה</p>
+      <div id="saved"></div>
+    </div>
     <form id="form" autocomplete="on">
       <label for="rid">מספר המחשב המרוחק</label>
       <input id="rid" class="field" inputmode="numeric" pattern="[0-9 ]*" maxlength="11"
              placeholder="000 000 000" autocomplete="off">
-      <div id="recent"></div>
       <label for="pw">סיסמה</label>
       <input id="pw" class="field" type="password" autocomplete="current-password">
-      <button id="go" class="primary" type="submit">התחבר</button>
+      <label class="check"><input id="remember" type="checkbox" checked> שמור את המחשב - בפעם הבאה בלי סיסמה</label>
+      <button id="go" class="primary" type="submit">התחבר עם סיסמה</button>
+      <button id="ask" class="secondary" type="button">🔔 בקש אישור מהצד השני (בלי סיסמה)</button>
       <div id="err"></div>
     </form>
     <div class="hint">החיבור מוצפן מקצה לקצה 🔒<br>
       להוספה למסך הבית: בתפריט הדפדפן ← "הוסף למסך הבית"</div>
+  </div>
+</div>
+
+<div id="waiting">
+  <div class="card">
+    <h2 style="margin:0 0 6px;font-size:19px">ממתין לאישור מהצד השני...</h2>
+    <div style="color:var(--muted);font-size:14px">ודא שזה אותו קוד שמופיע במסך השני:</div>
+    <div id="code">··· ···</div>
+    <button id="cancel-wait" class="secondary" type="button">ביטול</button>
   </div>
 </div>
 
@@ -157,7 +186,26 @@ const ERRORS = {
   impostor: "המחשב המרוחק לא עבר בדיקת זהות (ייתכן ניסיון התחזות)",
   protocol: "תשובה לא צפויה מהמחשב המרוחק",
   refused: "החיבור נדחה",
+  not_trusted: "הטלפון כבר לא מורשה להיכנס למחשב הזה. התחבר עם סיסמה או בקש אישור",
+  declined: "המשתמש במחשב המרוחק דחה את הבקשה",
+  no_approver: "אין מי שיאשר במחשב המרוחק (אף אחד לא מחובר אליו). התחבר עם סיסמה",
+  approval_timeout: "לא התקבל אישור מהמחשב המרוחק בזמן",
+  too_many_requests: "נשלחו יותר מדי בקשות. נסה שוב בעוד כמה דקות",
 };
+class AuthError extends Error { constructor(msg, code) { super(msg); this.code = code; } }
+const errOf = (r, def) => new AuthError(ERRORS[r.code] || r.message || ERRORS[def], r.code || def);
+const concat = (...parts) => {
+  const arrs = parts.map((p) => typeof p === "string" ? enc.encode(p) : new Uint8Array(p));
+  const out = new Uint8Array(arrs.reduce((n, a) => n + a.length, 0)); let o = 0;
+  for (const a of arrs) { out.set(a, o); o += a.length; } return out;
+};
+const unhex = (h) => new Uint8Array(h.match(/../g).map((x) => parseInt(x, 16)));
+async function sha256(data) { return crypto.subtle.digest("SHA-256", data); }
+async function verificationCode(key) {
+  const d = new DataView(await sha256(concat("code|", key)));
+  const n = String(d.getUint32(0) % 1000000).padStart(6, "0");
+  return n.slice(0, 3) + " " + n.slice(3);
+}
 const enc = new TextEncoder(), dec = new TextDecoder();
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 const randHex = (n) => hex(crypto.getRandomValues(new Uint8Array(n)));
@@ -187,7 +235,8 @@ class Session {
       this.failer = (e) => { clearTimeout(t); reject(e); };
     });
   }
-  async connect(id, password) {
+  // opts: {method: "password"|"trust"|"request", password, trustKey, remember, onCode}
+  async connect(id, opts) {
     const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/";
     const ws = this.ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
@@ -196,29 +245,51 @@ class Session {
       else if (this.aes) this.onBinary(ev.data);
     };
     ws.onclose = () => {
-      if (this.failer) { const f = this.failer; this.failer = null; f(new Error("אין חיבור לשרת")); }
+      if (this.failer) { const f = this.failer; this.failer = null; f(new Error(this.cancelled ? "בוטל" : "אין חיבור לשרת")); }
       if (this.aes && !this.closed) { this.closed = true; this.h.onClosed(this.byeReason || "החיבור נסגר"); }
       this.closed = true;
     };
     await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error("אין חיבור לשרת")); });
-    const keyP = deriveKey(password, id);          // start PBKDF2 while waiting
+    const method = opts.method;
+    const keyP = method === "password" ? deriveKey(opts.password, id) : null;   // start PBKDF2 early
     const first = this.recvText();
     ws.send(JSON.stringify({ type: "connect", id }));
     let r = await first;
-    if (r.type !== "connected") throw new Error(ERRORS[r.code] || r.message || ERRORS.refused);
+    if (r.type !== "connected") throw errOf(r, "refused");
     r = await this.recvText();
-    if (r.type !== "challenge") throw new Error(ERRORS[r.code] || ERRORS.protocol);
-    const key = await keyP;
+    if (r.type !== "challenge") throw errOf(r, "protocol");
+    this.remoteName = r.name || "";
     const hn = r.nonce, vn = randHex(16);
-    const reply = this.recvText();
-    ws.send(JSON.stringify({ type: "auth", vnonce: vn, proof: hex(await hmac(key, `viewer|${hn}|${vn}`)) }));
+    const msg = { type: "auth", method, vnonce: vn, device: deviceId(), device_name: deviceName() };
+    let key, ecdh;
+    if (method === "password") {
+      key = await keyP;
+      msg.proof = hex(await hmac(key, `viewer|${hn}|${vn}`)); msg.remember = !!opts.remember;
+    } else if (method === "trust") {
+      key = unhex(opts.trustKey);
+      msg.proof = hex(await hmac(key, `viewer|${hn}|${vn}`));
+    } else {
+      ecdh = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]);
+      msg.pub = hex(await crypto.subtle.exportKey("raw", ecdh.publicKey));
+    }
+    let reply = this.recvText();
+    ws.send(JSON.stringify(msg));
     r = await reply;
-    if (r.type !== "auth_ok") throw new Error(ERRORS[r.code] || ERRORS.wrong_password);
-    if (r.proof !== hex(await hmac(key, `host|${hn}|${vn}`))) throw new Error(ERRORS.impostor);
+    if (method === "request") {
+      if (r.type !== "pending") throw errOf(r, "protocol");
+      const hostPub = await crypto.subtle.importKey("raw", unhex(r.pub), { name: "ECDH", namedCurve: "P-256" }, false, []);
+      const shared = await crypto.subtle.deriveBits({ name: "ECDH", public: hostPub }, ecdh.privateKey, 256);
+      key = new Uint8Array(await sha256(concat("remotedesk-ecdh|", shared, "|" + hn + "|" + vn)));
+      opts.onCode && opts.onCode(await verificationCode(key));
+      r = await this.recvText(60000);
+    }
+    if (r.type !== "auth_ok") throw errOf(r, "wrong_password");
+    if (r.proof !== hex(await hmac(key, `host|${hn}|${vn}`))) throw new AuthError(ERRORS.impostor, "impostor");
     const sess = await hmac(key, `session|${hn}|${vn}`);
     this.aes = await crypto.subtle.importKey("raw", sess, "AES-GCM", false, ["encrypt", "decrypt"]);
     this.failer = this.waiter = null;
   }
+  cancel() { this.cancelled = true; this.close(); }
   nonce(dir, ctr) {
     const n = new Uint8Array(12); n[0] = dir;
     new DataView(n.buffer).setBigUint64(4, ctr);
@@ -266,46 +337,99 @@ const $ = (id) => document.getElementById(id);
 const fmt = (id) => id.replace(/\D/g, "").replace(/(\d{3})(?=\d)/g, "$1 ").trim();
 function store(k, v) { try { if (v === undefined) return JSON.parse(localStorage.getItem(k)); localStorage.setItem(k, JSON.stringify(v)); } catch { return null; } }
 
-function renderRecent() {
-  const box = $("recent"); box.innerHTML = "";
-  for (const id of store("recent") || []) {
-    const b = document.createElement("button"); b.type = "button"; b.textContent = fmt(id);
-    b.onclick = () => { $("rid").value = fmt(id); $("pw").focus(); };
-    box.appendChild(b);
+function deviceId() {
+  let d = store("device_id");
+  if (!d) { d = randHex(16); store("device_id", d); }
+  return d;
+}
+function deviceName() {
+  const ua = navigator.userAgent;
+  const kind = /iPhone/.test(ua) ? "אייפון" : /iPad/.test(ua) ? "אייפד" : /Android/.test(ua) ? "טלפון אנדרואיד" : "דפדפן";
+  return store("device_name") || kind;
+}
+const savedAll = () => store("saved") || {};
+function saveComputer(id, patch) { const all = savedAll(); all[id] = { ...(all[id] || {}), ...patch }; store("saved", all); renderSaved(); }
+
+function renderSaved() {
+  const box = $("saved"); box.innerHTML = "";
+  const all = savedAll(); const ids = Object.keys(all);
+  $("saved-box").style.display = ids.length ? "block" : "none";
+  for (const id of ids) {
+    const e = all[id];
+    const row = document.createElement("div"); row.className = "saved-item";
+    const lock = document.createElement("span"); lock.textContent = e.key ? "🔓" : "🔒";
+    const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = e.name || "מחשב";
+    const idl = document.createElement("span"); idl.className = "id"; idl.textContent = fmt(id);
+    const x = document.createElement("button"); x.className = "x"; x.type = "button"; x.textContent = "✕"; x.title = "מחק";
+    x.onclick = (ev) => {
+      ev.stopPropagation();
+      if (confirm(`למחוק את "${e.name || fmt(id)}" מהרשימה?`)) { const a = savedAll(); delete a[id]; store("saved", a); renderSaved(); }
+    };
+    row.onclick = () => {
+      if (e.key) start(id, { method: "trust", trustKey: e.key });
+      else { $("rid").value = fmt(id); $("pw").focus(); }
+    };
+    row.append(lock, nm, idl, x); box.appendChild(row);
   }
 }
-renderRecent();
+renderSaved();
 $("rid").addEventListener("input", (e) => { e.target.value = fmt(e.target.value).slice(0, 11); });
 
 if (!window.crypto || !crypto.subtle) {
   $("err").textContent = "הדף חייב להיפתח בכתובת מאובטחת (https://). בדוק את הגדרת השרת.";
-  $("go").disabled = true;
+  $("go").disabled = true; $("ask").disabled = true;
 }
 
-let session = null;
-$("form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const id = $("rid").value.replace(/\D/g, ""), pw = $("pw").value;
+let session = null, pending = null;
+function busy(on) {
+  $("go").disabled = on; $("ask").disabled = on;
+  $("go").textContent = on ? "מתחבר..." : "התחבר עם סיסמה";
+}
+async function start(id, opts) {
   $("err").textContent = "";
-  if (id.length !== 9) { $("err").textContent = "הקלד מספר מחשב בן 9 ספרות"; return; }
-  if (!pw) { $("err").textContent = "הקלד סיסמה"; return; }
-  $("go").disabled = true; $("go").textContent = "מתחבר...";
-  const s = new Session({ onFrame, onMessage, onClosed });
+  busy(true);
+  const s = pending = new Session({ onFrame, onMessage, onClosed });
+  if (opts.method === "request") {
+    $("code").textContent = "··· ···"; $("waiting").style.display = "flex";
+    opts.onCode = (c) => { $("code").textContent = c; };
+  }
   try {
-    await s.connect(id, pw);
+    await s.connect(id, opts);
   } catch (err) {
-    s.close();
-    $("err").textContent = err.message || "החיבור נכשל";
-    $("go").disabled = false; $("go").textContent = "התחבר";
+    s.close(); pending = null;
+    $("waiting").style.display = "none"; busy(false);
+    if (opts.method === "trust" && err.code === "not_trusted") {
+      saveComputer(id, { key: undefined });
+      $("rid").value = fmt(id);
+    }
+    if (!s.cancelled) $("err").textContent = err.message || "החיבור נכשל";
     return;
   }
-  $("go").disabled = false; $("go").textContent = "התחבר";
+  pending = null;
+  $("waiting").style.display = "none"; busy(false);
   $("pw").value = "";
-  store("recent", [id, ...(store("recent") || []).filter((x) => x !== id)].slice(0, 6));
-  renderRecent();
-  session = s;
+  if (opts.remember || opts.method === "trust") saveComputer(id, { name: savedAll()[id]?.name || s.remoteName || fmt(id) });
+  session = s; session.hostId = id;
   startSession();
+}
+$("cancel-wait").onclick = () => { if (pending) pending.cancel(); $("waiting").style.display = "none"; };
+
+function readId() {
+  const id = $("rid").value.replace(/\D/g, "");
+  if (id.length !== 9) { $("err").textContent = "הקלד מספר מחשב בן 9 ספרות"; return null; }
+  return id;
+}
+$("form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const id = readId(); if (!id) return;
+  const pw = $("pw").value;
+  if (!pw) { $("err").textContent = "הקלד סיסמה, או לחץ \"בקש אישור\""; return; }
+  start(id, { method: "password", password: pw, remember: $("remember").checked });
 });
+$("ask").onclick = () => {
+  const id = readId(); if (!id) return;
+  start(id, { method: "request", remember: $("remember").checked });
+};
 
 // =====================================================================
 // Session screen: drawing
@@ -385,6 +509,11 @@ function onMessage(m) {
     }
     sel.value = m.monitor || 1;
     $("status").textContent = `${m.width}×${m.height} 🔒`;
+  } else if (m.type === "trust_grant") {
+    if (session && session.hostId) {
+      saveComputer(session.hostId, { key: m.key, name: savedAll()[session.hostId]?.name || m.host_name || fmt(session.hostId) });
+      toast("✅ המחשב נשמר - בפעם הבאה נכנסים בלי סיסמה", 3000);
+    }
   } else if (m.type === "file_done") toast("✅ הקובץ התקבל: " + (m.path || ""), 4000);
   else if (m.type === "file_error") toast("❌ שליחת הקובץ נכשלה: " + (m.message || ""), 4000);
 }
