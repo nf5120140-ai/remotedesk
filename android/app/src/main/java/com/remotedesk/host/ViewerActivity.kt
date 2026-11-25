@@ -119,7 +119,7 @@ class ViewerActivity : Activity() {
         }
     }
 
-    private fun setImmersive(on: Boolean) {
+    private fun setFullScreenSession(on: Boolean) {
         if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (Build.VERSION.SDK_INT >= 30) {
@@ -147,7 +147,7 @@ class ViewerActivity : Activity() {
         @JavascriptInterface
         fun setInSession(active: Boolean) {
             inSession = active
-            runOnUiThread { setImmersive(active) }
+            runOnUiThread { setFullScreenSession(active) }
         }
 
         @JavascriptInterface
