@@ -419,6 +419,8 @@ async function start(id, opts) {
   $("pw").value = "";
   if (opts.remember || opts.method === "trust") saveComputer(id, { name: savedAll()[id]?.name || s.remoteName || fmt(id) });
   session = s; session.hostId = id;
+  // remember how we got in (memory only) so a dropped connection can resume by itself
+  session.resume = opts.method === "request" ? null : { method: opts.method, password: opts.password, trustKey: opts.trustKey };
   startSession();
 }
 $("cancel-wait").onclick = () => { if (pending) pending.cancel(); $("waiting").style.display = "none"; };
@@ -528,8 +530,37 @@ function onMessage(m) {
 }
 
 function onClosed(reason) {
+  const old = session;
+  // the remote user pressed "disconnect" -> don't come back
+  if (old && !old.byeReason && old.hostId) {
+    const saved = savedAll()[old.hostId];
+    const how = saved && saved.key ? { method: "trust", trustKey: saved.key } : old.resume;
+    if (how) { reconnect(old.hostId, how, reason, 1); return; }
+  }
   endSession();
   $("err").textContent = "החיבור הסתיים: " + reason;
+}
+
+async function reconnect(id, how, reason, attempt) {
+  toast(`החיבור נפל - מתחבר מחדש... (${attempt}/5)`, 6000);
+  const s = new Session({ onFrame, onMessage, onClosed });
+  session = s; s.hostId = id; s.resume = how;
+  try {
+    await s.connect(id, { ...how });
+  } catch (err) {
+    s.close();
+    if (attempt < 5 && err.code !== "not_trusted" && err.code !== "wrong_password") {
+      setTimeout(() => { if (session === s) reconnect(id, how, reason, attempt + 1); }, 2000);
+    } else {
+      session = s; endSession();
+      $("err").textContent = "החיבור הסתיים: " + reason;
+    }
+    return;
+  }
+  pendingFrame = null; decoding = false;
+  toast("✅ מחובר שוב", 1500);
+  const [q, w] = $("b-quality").value.split(",").map(Number);
+  s.send({ type: "settings", quality: q, max_width: w });
 }
 
 let toastTimer;

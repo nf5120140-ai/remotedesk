@@ -39,6 +39,32 @@ class Host:
 
 hosts: dict[str, Host] = {}
 
+# ---- diagnostics: last events per ID (no content, only connect/disconnect info)
+from collections import deque
+events: dict[str, deque] = defaultdict(lambda: deque(maxlen=40))
+
+
+def who_closed(ws):
+    """Describe how a connection ended."""
+    try:
+        pr = ws.protocol
+        rcvd, sent, rcvd_first = pr.close_rcvd, pr.close_sent, pr.close_rcvd_then_sent
+    except Exception:
+        rcvd = sent = rcvd_first = None
+    if rcvd is not None and (sent is None or rcvd_first):
+        side = "remote closed"
+    elif sent is not None:
+        side = "relay closed"
+    else:
+        side = "connection dropped (no close frame)"
+    code = getattr(ws, "close_code", None)
+    reason = getattr(ws, "close_reason", "") or ""
+    return f"{side} code={code} {reason}".strip()
+
+
+def record(host_id, what):
+    events[host_id].append((time.time(), what))
+
 # ID ownership: id -> sha256(secret). The first computer that registers an ID
 # owns it; nobody else can take it over later (prevents ID hijacking).
 OWNERS_FILE = os.environ.get("OWNERS_FILE", "owners.json")
@@ -104,10 +130,12 @@ async def handle_host(ws, host_id, secret):
     old = hosts.get(host_id)
     if old is not None:
         # Same ID re-registering (e.g. reconnect after network drop): replace.
+        record(host_id, f"host replaced by a new connection from {client_ip(ws)}")
         await old.ws.close()
     host = Host(ws, host_id)
     hosts[host_id] = host
     log.info("host %s online (%s)", host_id, client_ip(ws))
+    record(host_id, f"host online from {client_ip(ws)}")
     await send_json(ws, type="registered", id=host_id)
     try:
         async for msg in ws:
@@ -123,6 +151,7 @@ async def handle_host(ws, host_id, secret):
         if host.viewer is not None:
             await host.viewer.close()
         log.info("host %s offline", host_id)
+        record(host_id, "host offline: " + who_closed(ws))
 
 
 async def handle_viewer(ws, target_id):
@@ -139,6 +168,8 @@ async def handle_viewer(ws, target_id):
         return
     host.viewer = ws
     log.info("viewer %s -> host %s", ip, target_id)
+    record(target_id, f"viewer joined from {ip}")
+    started = time.time()
     await send_json(ws, type="connected")
     await send_json(host.ws, type="peer_joined", ip=ip)
     try:
@@ -148,6 +179,7 @@ async def handle_viewer(ws, target_id):
             host.viewer = None
             await send_json(host.ws, type="peer_left")
         log.info("viewer %s left host %s", ip, target_id)
+        record(target_id, f"viewer left after {time.time() - started:.0f}s: " + who_closed(ws))
 
 
 async def handler(ws):
@@ -192,6 +224,14 @@ async def http_handler(connection, request):
     path = request.path.split("?", 1)[0]
     if path in ("/", ""):
         path = "/index.html"
+    if path.startswith("/diag/"):
+        hid = path[6:]
+        now = time.time()
+        lines = [f"-{now - t:6.0f}s  {w}" for t, w in events.get(hid, [])] or ["no events"]
+        state = "online" if hid in hosts else "offline"
+        busy = " (in a session)" if hid in hosts and hosts[hid].viewer is not None else ""
+        body = f"host {hid}: {state}{busy}\n\n" + "\n".join(lines) + "\n"
+        return static_response(200, body.encode(), "text/plain; charset=utf-8")
     if path == "/health":
         return static_response(200, b"RemoteDesk relay OK\n", "text/plain")
     f = (WEB_DIR / path.lstrip("/")).resolve()
