@@ -760,8 +760,8 @@ class App(tk.Tk):
                 sess.close()
                 code = getattr(e, "code", None)
                 msg = str(e) or e.__class__.__name__
-                if isinstance(e, (OSError, TimeoutError)) and not isinstance(e, core.AuthError):
-                    msg = f"אין חיבור לשרת ({msg}). בדוק את החיבור לאינטרנט."
+                if not isinstance(e, core.AuthError):
+                    msg = core.explain_connection_error(e)
                 self.after(0, self._connect_failed, rid, method, code, msg, wait["win"])
                 return
             self.after(0, self._open_viewer, rid, sess, holder, wait["win"], remember or method == "trust")

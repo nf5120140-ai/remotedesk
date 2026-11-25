@@ -70,6 +70,25 @@ ERRORS = {
 APPROVAL_TIMEOUT = 45
 
 
+def explain_connection_error(e):
+    """Human (Hebrew) explanation for a failed connection to the relay."""
+    status = getattr(getattr(e, "response", None), "status_code", None)
+    name = e.__class__.__name__
+    if status is not None:
+        if status in (403, 418, 451):
+            return f"הגישה לשרת נחסמה (קוד {status}) - כנראה סינון אינטרנט. יש לבקש לאשר את הכתובת של השרת"
+        if status in (502, 503, 504, 520, 521, 522, 523, 524):
+            return f"השרת מתעורר או מתעדכן (קוד {status}) - מנסה שוב..."
+        if status == 200:
+            return "חיבור חי (WebSocket) לשרת נחסם בדרך - כנראה סינון אינטרנט"
+        return f"השרת דחה את החיבור (קוד {status})"
+    if isinstance(e, TimeoutError) or "Timeout" in name:
+        return "אין תשובה מהשרת - בדוק את החיבור לאינטרנט"
+    if isinstance(e, OSError):
+        return "אין חיבור לאינטרנט או לשרת"
+    return f"לא מחובר לשרת ({name})"
+
+
 # --------------------------------------------------------------------------
 # Config
 # --------------------------------------------------------------------------
@@ -539,7 +558,7 @@ class HostService(threading.Thread):
             except Exception as e:
                 if self.stop_flag.is_set():
                     break
-                self.on_status(f"לא מחובר לשרת ({e.__class__.__name__}) - מנסה שוב...", False)
+                self.on_status(explain_connection_error(e) + " · מנסה שוב...", False)
             finally:
                 self._end_session()
                 self.ws = None
