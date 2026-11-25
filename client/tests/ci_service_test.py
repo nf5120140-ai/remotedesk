@@ -86,4 +86,24 @@ print("uninstall exit code:", r.returncode)
 dump_logs()
 log = (core.CONFIG_DIR / "service.log").read_text("utf-8", "replace")
 assert "service started (version 1.0." in log, "version not stamped into exe"
+# ---- installer: fresh install, then upgrade OVER a running copy, then uninstall
+setup = EXE.parent / "RemoteDesk-Setup.exe"
+if setup.exists():
+    def run_setup(label):
+        r = subprocess.run([str(setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TASKS=service"],
+                           timeout=300)
+        st = subprocess.run(["sc.exe", "query", "RemoteDesk"], capture_output=True, text=True).stdout
+        print(f"{label}: setup exit={r.returncode} service running={'RUNNING' in st}")
+        assert r.returncode == 0 and "RUNNING" in st, f"{label} failed"
+    run_setup("fresh install")
+    time.sleep(8)                       # agent is now running from Program Files
+    subprocess.Popen([r"C:\Program Files\RemoteDesk\RemoteDesk.exe"])   # and the window is open
+    time.sleep(5)
+    run_setup("upgrade over running copy")
+    unins = Path(r"C:\Program Files\RemoteDesk\unins000.exe")
+    r = subprocess.run([str(unins), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"], timeout=300)
+    time.sleep(3)
+    st = subprocess.run(["sc.exe", "query", "RemoteDesk"], capture_output=True, text=True)
+    print("uninstall: exit", r.returncode, "service removed:", st.returncode != 0)
+    assert st.returncode != 0, "service still installed after uninstall"
 print("PASS")

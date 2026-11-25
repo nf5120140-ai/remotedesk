@@ -44,6 +44,26 @@ Filename: "{app}\RemoteDesk.exe"; Description: "פתח את RemoteDesk"; Flags: 
 
 [UninstallRun]
 Filename: "{app}\RemoteDesk.exe"; Parameters: "--uninstall-service"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveService"
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM RemoteDesk.exe /T"; Flags: runhidden waituntilterminated; RunOnceId: "KillApp"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{commonappdata}\RemoteDesk"
+
+[Code]
+{ Stop the running service, agent and window before files are replaced -
+  otherwise Windows refuses to overwrite RemoteDesk.exe ("Access is denied"). }
+procedure StopRemoteDesk();
+var
+  R: Integer;
+begin
+  Exec(ExpandConstant('{sys}\sc.exe'), 'stop RemoteDesk', '', SW_HIDE, ewWaitUntilTerminated, R);
+  Sleep(2500);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM RemoteDesk.exe /T', '', SW_HIDE, ewWaitUntilTerminated, R);
+  Sleep(1000);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  StopRemoteDesk();
+  Result := '';
+end;
