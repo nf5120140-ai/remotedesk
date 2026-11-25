@@ -25,6 +25,7 @@ from PIL import Image, ImageTk
 
 import core
 import updater
+import approval
 import winsvc
 
 APP_NAME = "RemoteDesk"
@@ -252,7 +253,7 @@ class App(tk.Tk):
         super().__init__()
         self.cfg = core.load_config()
         self.title(T(f"{APP_NAME} - שליטה מרחוק"))
-        self.geometry("600x520")
+        self.geometry("620x500")
         self.resizable(False, False)
         style = ttk.Style(self)
         try:
@@ -261,10 +262,19 @@ class App(tk.Tk):
             pass
         style.configure("TLabelframe.Label", font=(FONT, 11, "bold"))
 
-        root = ttk.Frame(self, padding=14)
-        root.pack(fill="both", expand=True)
+        nb = ttk.Notebook(self)
+        nb.pack(fill="both", expand=True, padx=8, pady=8)
+        self.nb = nb
+        root = ttk.Frame(nb, padding=12)
+        tab_saved = ttk.Frame(nb, padding=12)
+        tab_trusted = ttk.Frame(nb, padding=12)
+        tab_settings = ttk.Frame(nb, padding=12)
+        nb.add(root, text=T("  ראשי  "))
+        nb.add(tab_saved, text=T("  מחשבים שמורים  "))
+        nb.add(tab_trusted, text=T("  מורשים להיכנס אליי  "))
+        nb.add(tab_settings, text=T("  הגדרות  "))
 
-        # ---------------- This computer
+        # ================= Main tab
         box = ttk.LabelFrame(root, text=T(" המחשב הזה "), padding=10, labelanchor="ne")
         box.pack(fill="x")
         box.columnconfigure(1, weight=1)
@@ -292,22 +302,57 @@ class App(tk.Tk):
         self.session_label.pack(side="right")
         self.kick_btn = ttk.Button(self.session_frame, text=T("נתק את החיבור"), command=self.kick)
 
-        # ---------------- Remote computer
         box2 = ttk.LabelFrame(root, text=T(" שליטה במחשב מרוחק "), padding=10, labelanchor="ne")
         box2.pack(fill="x", pady=(12, 0))
-        ttk.Label(box2, text=T("מספר המחשב המרוחק:"), font=(FONT, 10)).pack(side="right")
+        row = ttk.Frame(box2)
+        row.pack(fill="x")
+        ttk.Label(row, text=T("מספר המחשב המרוחק:"), font=(FONT, 10)).pack(side="right")
         self.remote_var = tk.StringVar()
-        self.remote_combo = ttk.Combobox(box2, textvariable=self.remote_var, width=14,
+        self.remote_combo = ttk.Combobox(row, textvariable=self.remote_var, width=14,
                                          font=(FONT, 14), values=self.cfg.get("recent", []))
         self.remote_combo.pack(side="right", padx=8)
         self.remote_combo.bind("<Return>", lambda e: self.connect())
-        self.connect_btn = ttk.Button(box2, text=T("התחבר"), command=self.connect)
+        self.connect_btn = ttk.Button(row, text=T("התחבר"), command=self.connect)
         self.connect_btn.pack(side="right")
+        ttk.Label(box2, text=T("טיפ: מחשבים שסימנת \"שמור\" מופיעים בלשונית \"מחשבים שמורים\" - "
+                               "לחיצה כפולה ונכנסים בלי סיסמה."), foreground="gray",
+                  font=(FONT, 9), wraplength=540, justify="right").pack(anchor="e", pady=(8, 0))
 
-        # ---------------- System mode
-        box3 = ttk.LabelFrame(root, text=T(" גישה מלאה (מנהל מערכת) "), padding=10, labelanchor="ne")
-        box3.pack(fill="x", pady=(12, 0))
-        self.svc_label = ttk.Label(box3, text="", font=(FONT, 10), justify="right", wraplength=540)
+        # ================= Saved computers tab (computers I can enter)
+        ttk.Label(tab_saved, text=T("מחשבים שאפשר להיכנס אליהם בלחיצה כפולה, בלי סיסמה:"),
+                  font=(FONT, 10)).pack(anchor="e")
+        self.saved_list = tk.Listbox(tab_saved, height=11, font=(FONT, 12), justify="right",
+                                     activestyle="none", selectbackground="#c62828")
+        self.saved_list.pack(fill="both", expand=True, pady=6)
+        self.saved_list.bind("<Double-Button-1>", lambda e: self.connect_saved())
+        self.saved_list.bind("<Return>", lambda e: self.connect_saved())
+        sb = ttk.Frame(tab_saved)
+        sb.pack(fill="x")
+        ttk.Button(sb, text=T("התחבר"), command=self.connect_saved).pack(side="right", padx=2)
+        ttk.Button(sb, text=T("שנה שם"), command=self.rename_saved).pack(side="right", padx=2)
+        ttk.Button(sb, text=T("מחק"), command=self.delete_saved).pack(side="right", padx=2)
+        ttk.Button(sb, text=T("הוסף מחשב..."), command=self.add_saved).pack(side="left", padx=2)
+        self.saved_ids = []
+
+        # ================= Trusted tab (computers that can enter me)
+        ttk.Label(tab_trusted, text=T("מחשבים וטלפונים שמורשים להיכנס למחשב הזה בלי סיסמה:"),
+                  font=(FONT, 10)).pack(anchor="e")
+        self.trusted_list = tk.Listbox(tab_trusted, height=11, font=(FONT, 12), justify="right",
+                                       activestyle="none", selectbackground="#c62828")
+        self.trusted_list.pack(fill="both", expand=True, pady=6)
+        tb = ttk.Frame(tab_trusted)
+        tb.pack(fill="x")
+        ttk.Button(tb, text=T("בטל הרשאה"), command=self.revoke_trusted).pack(side="right", padx=2)
+        ttk.Button(tb, text=T("בטל הכול"), command=self.revoke_all).pack(side="right", padx=2)
+        ttk.Label(tab_trusted, text=T("מחשב נכנס לרשימה כשמאשרים בקשת גישה עם \"אפשר תמיד\", "
+                                      "או כשמתחברים עם הסיסמה ומסמנים \"שמור\"."),
+                  foreground="gray", font=(FONT, 9), wraplength=540, justify="right").pack(anchor="e", pady=(8, 0))
+        self.trusted_ids = []
+
+        # ================= Settings tab
+        box3 = ttk.LabelFrame(tab_settings, text=T(" גישה מלאה (מנהל מערכת) "), padding=10, labelanchor="ne")
+        box3.pack(fill="x")
+        self.svc_label = ttk.Label(box3, text="", font=(FONT, 10), justify="right", wraplength=520)
         self.svc_label.pack(side="top", anchor="e")
         btns = ttk.Frame(box3)
         btns.pack(side="top", anchor="e", pady=(6, 0))
@@ -316,23 +361,29 @@ class App(tk.Tk):
         self.uninstall_btn = ttk.Button(btns, text=T("הסר שירות"), command=self.uninstall)
         self.uninstall_btn.pack(side="right", padx=2)
 
-        # ---------------- Server
-        box4 = ttk.Frame(root)
-        box4.pack(fill="x", pady=(12, 0))
+        box6 = ttk.Frame(tab_settings)
+        box6.pack(fill="x", pady=(14, 0))
+        ttk.Label(box6, text=T("שם המחשב (מוצג לצד השני):")).pack(side="right")
+        self.name_var = tk.StringVar(value=self.cfg.get("device_name", ""))
+        ttk.Entry(box6, textvariable=self.name_var, width=26, justify="right").pack(side="right", padx=6)
+        ttk.Button(box6, text=T("שמור"), command=self.save_name).pack(side="right")
+
+        box4 = ttk.Frame(tab_settings)
+        box4.pack(fill="x", pady=(14, 0))
         ttk.Label(box4, text=T("כתובת שרת:")).pack(side="right")
         self.server_var = tk.StringVar(value=self.cfg["server"])
-        ttk.Entry(box4, textvariable=self.server_var, width=42).pack(side="right", padx=6)
+        ttk.Entry(box4, textvariable=self.server_var, width=40).pack(side="right", padx=6)
         ttk.Button(box4, text=T("החל"), command=self.save_server).pack(side="right")
 
-        # ---------------- Version / updates
-        box5 = ttk.Frame(root)
-        box5.pack(fill="x", pady=(10, 0))
+        box5 = ttk.Frame(tab_settings)
+        box5.pack(fill="x", pady=(14, 0))
         self.version_label = ttk.Label(box5, text=T(f"גרסה {updater.VERSION}"), foreground="gray")
         self.version_label.pack(side="right")
         self.update_btn = ttk.Button(box5, text="", command=self.do_update)
         self.update_info = None
         threading.Thread(target=self.check_update, daemon=True).start()
 
+        self.refresh_lists()
         self.host = None
         self.service_mode = None
         self.refresh_mode()
@@ -371,6 +422,13 @@ class App(tk.Tk):
             self.uninstall_btn.config(state="normal" if state == "stopped" else "disabled")
 
     def poll_service(self):
+        try:
+            m = core.CONFIG_FILE.stat().st_mtime
+        except OSError:
+            m = 0
+        if m != getattr(self, "_cfg_mtime", None):
+            self._cfg_mtime = m
+            self.refresh_lists()
         if self.service_mode:
             try:
                 st = json.loads(core.STATUS_FILE.read_text("utf-8"))
@@ -391,7 +449,8 @@ class App(tk.Tk):
         self.host = core.HostService(
             self.cfg,
             on_status=lambda t, ok: self.after(0, self.set_status, t, ok),
-            on_session=lambda a, ip: self.after(0, self.set_session, a, ip))
+            on_session=lambda a, ip: self.after(0, self.set_session, a, ip),
+            on_request=lambda info: approval.ask(self, info, T))
         self.host.start()
 
     def set_status(self, text, ok):
@@ -533,51 +592,219 @@ class App(tk.Tk):
             error(str(e))
         self.refresh_mode()
 
+    # ---------------------------------------------------------------- lists
+    def refresh_lists(self):
+        self.reload_cfg()
+        self.saved_list.delete(0, "end")
+        self.saved_ids = []
+        for hid, e in sorted(self.cfg.get("saved", {}).items(), key=lambda kv: kv[1].get("name", "")):
+            lock = "🔓" if e.get("trust_key") else "🔒"
+            self.saved_list.insert("end", T(f"{lock}  {e.get('name') or 'מחשב'}   ·   {core.format_id(hid)}"))
+            self.saved_ids.append(hid)
+        self.trusted_list.delete(0, "end")
+        self.trusted_ids = []
+        for did, e in sorted(self.cfg.get("trusted", {}).items(), key=lambda kv: kv[1].get("added", 0)):
+            when = time.strftime("%d/%m/%Y", time.localtime(e.get("added", 0)))
+            self.trusted_list.insert("end", T(f"{e.get('name', 'מחשב')}   ·   נוסף {when}"))
+            self.trusted_ids.append(did)
+
+    def _selected(self, lb, ids):
+        sel = lb.curselection()
+        return ids[sel[0]] if sel else None
+
+    def connect_saved(self):
+        hid = self._selected(self.saved_list, self.saved_ids)
+        if hid:
+            self.start_connect(hid)
+
+    def rename_saved(self):
+        hid = self._selected(self.saved_list, self.saved_ids)
+        if not hid:
+            return
+        e = self.cfg["saved"][hid]
+        name = simpledialog.askstring(T(APP_NAME), T("שם חדש:"), initialvalue=e.get("name", ""), parent=self)
+        if name:
+            self.reload_cfg()
+            self.cfg["saved"][hid]["name"] = name.strip()[:60]
+            core.save_config(self.cfg)
+            self.refresh_lists()
+
+    def delete_saved(self):
+        hid = self._selected(self.saved_list, self.saved_ids)
+        if hid and messagebox.askyesno(T(APP_NAME), T("למחוק את המחשב מהרשימה?")):
+            self.reload_cfg()
+            self.cfg["saved"].pop(hid, None)
+            core.save_config(self.cfg)
+            self.refresh_lists()
+
+    def add_saved(self):
+        rid = simpledialog.askstring(T(APP_NAME), T("מספר המחשב (9 ספרות):"), parent=self)
+        if rid:
+            self.remote_var.set(rid)
+            self.connect(force_save=True)
+
+    def revoke_trusted(self):
+        did = self._selected(self.trusted_list, self.trusted_ids)
+        if did and messagebox.askyesno(T(APP_NAME), T("לבטל את ההרשאה של המחשב הזה?")):
+            self.reload_cfg()
+            self.cfg["trusted"].pop(did, None)
+            core.save_config(self.cfg)
+            self.refresh_lists()
+
+    def revoke_all(self):
+        if self.cfg.get("trusted") and messagebox.askyesno(T(APP_NAME), T("לבטל את ההרשאות של כל המחשבים?")):
+            self.reload_cfg()
+            self.cfg["trusted"] = {}
+            core.save_config(self.cfg)
+            self.refresh_lists()
+
+    def save_name(self):
+        self.reload_cfg()
+        self.cfg["device_name"] = self.name_var.get().strip()[:60] or "Computer"
+        core.save_config(self.cfg)
+        info("השם נשמר.")
+
     # ---------------------------------------------------------------- viewer
-    def connect(self):
+    def connect(self, force_save=False):
         rid = self.remote_var.get().replace(" ", "")
         if not (rid.isdigit() and len(rid) == 9):
             warn("הקלד מספר מחשב בן 9 ספרות.")
             return
+        self.start_connect(rid)
+
+    def start_connect(self, rid):
         if rid == self.cfg["id"]:
             warn("זה המספר של המחשב הזה עצמו.")
             return
-        pw = simpledialog.askstring(T(APP_NAME), T(f"סיסמה עבור {core.format_id(rid)}:"), show="*", parent=self)
-        if not pw:
-            return
-        self.connect_btn.config(state="disabled", text=T("מתחבר..."))
-        threading.Thread(target=self._do_connect, args=(rid, pw), daemon=True).start()
+        self.reload_cfg()
+        saved = self.cfg.get("saved", {}).get(rid)
+        if saved and saved.get("trust_key"):
+            self._run_connect(rid, "trust", trust_key=saved["trust_key"])
+        else:
+            self.ask_how_to_connect(rid)
 
-    def _do_connect(self, rid, pw):
+    def ask_how_to_connect(self, rid, note=""):
+        d = tk.Toplevel(self)
+        d.title(T(f"התחברות ל-{core.format_id(rid)}"))
+        d.resizable(False, False)
+        d.transient(self)
+        d.grab_set()
+        f = ttk.Frame(d, padding=16)
+        f.pack(fill="both")
+        if note:
+            ttk.Label(f, text=T(note), foreground="#b26a00", wraplength=380, justify="right").pack(anchor="e", pady=(0, 8))
+        ttk.Label(f, text=T(f"התחברות למחשב {core.format_id(rid)}"), font=(FONT, 12, "bold")).pack(anchor="e")
+        ttk.Label(f, text=T("סיסמה:")).pack(anchor="e", pady=(12, 2))
+        pw = tk.StringVar()
+        e = ttk.Entry(f, textvariable=pw, show="*", width=30)
+        e.pack(anchor="e")
+        e.focus_set()
+        remember = tk.BooleanVar(value=True)
+        ttk.Checkbutton(f, text=T("שמור את המחשב - בפעם הבאה נכנסים בלי סיסמה"),
+                        variable=remember).pack(anchor="e", pady=(10, 0))
+        b = ttk.Frame(f)
+        b.pack(fill="x", pady=(14, 0))
+
+        def with_password(_e=None):
+            if not pw.get():
+                e.focus_set()
+                return
+            d.destroy()
+            self._run_connect(rid, "password", password=pw.get(), remember=remember.get())
+
+        def with_request():
+            d.destroy()
+            self._run_connect(rid, "request", remember=remember.get())
+
+        ttk.Button(b, text=T("התחבר עם סיסמה"), command=with_password).pack(side="right", padx=2)
+        ttk.Button(b, text=T("בקש אישור מהצד השני"), command=with_request).pack(side="right", padx=2)
+        ttk.Button(b, text=T("ביטול"), command=d.destroy).pack(side="left", padx=2)
+        ttk.Label(f, text=T("\"בקש אישור\" - במחשב השני יופיע חלון עם קוד אימות, ומי שיושב שם יאשר."),
+                  foreground="gray", font=(FONT, 9), wraplength=380, justify="right").pack(anchor="e", pady=(10, 0))
+        e.bind("<Return>", with_password)
+
+    def _run_connect(self, rid, method, password="", trust_key=None, remember=False):
+        self.connect_btn.config(state="disabled", text=T("מתחבר..."))
+        wait = {"win": None}
+        if method == "request":
+            w = tk.Toplevel(self)
+            w.title(T("ממתין לאישור"))
+            w.resizable(False, False)
+            w.transient(self)
+            ff = ttk.Frame(w, padding=18)
+            ff.pack()
+            ttk.Label(ff, text=T("ממתין שהצד השני יאשר את הבקשה..."), font=(FONT, 11)).pack()
+            ttk.Label(ff, text=T("קוד האימות (צריך להיות זהה לקוד שמופיע שם):")).pack(pady=(12, 0))
+            code_lbl = ttk.Label(ff, text="···", font=("Consolas", 26, "bold"), foreground="#c62828")
+            code_lbl.pack()
+            wait.update(win=w, code=code_lbl)
         holder = {}
         sess = core.ViewerSession(
-            self.cfg["server"], rid, pw,
+            self.cfg["server"], rid, password,
             on_frame=lambda d: holder["w"].push_frame(d) if "w" in holder else sess.ack(),
-            on_message=lambda m: holder["w"].push_message(m) if "w" in holder else None,
+            on_message=lambda m: self.after(0, self._viewer_message, rid, m, holder),
             on_closed=lambda r: holder["w"].push_closed(r) if "w" in holder else None)
-        try:
-            sess.handshake()
-        except Exception as e:
-            sess.close()
-            msg = str(e) or e.__class__.__name__
-            if isinstance(e, (OSError, TimeoutError)) and not isinstance(e, core.AuthError):
-                msg = f"אין חיבור לשרת ({msg}). בדוק את כתובת השרת ואת החיבור לאינטרנט."
-            self.after(0, self._connect_failed, msg)
-            return
-        self.after(0, self._open_viewer, rid, sess, holder)
+        if wait["win"]:
+            ttk.Button(wait["win"].winfo_children()[0], text=T("ביטול"), command=sess.cancel).pack(pady=(12, 0))
 
-    def _connect_failed(self, err):
+        def work():
+            try:
+                sess.handshake(method, trust_key=trust_key, remember=remember,
+                               device_id=self.cfg["device_id"], device_name=self.cfg.get("device_name", ""),
+                               on_code=lambda c: self.after(0, lambda: wait["code"].config(text=c)))
+            except Exception as e:
+                sess.close()
+                code = getattr(e, "code", None)
+                msg = str(e) or e.__class__.__name__
+                if isinstance(e, (OSError, TimeoutError)) and not isinstance(e, core.AuthError):
+                    msg = f"אין חיבור לשרת ({msg}). בדוק את החיבור לאינטרנט."
+                self.after(0, self._connect_failed, rid, method, code, msg, wait["win"])
+                return
+            self.after(0, self._open_viewer, rid, sess, holder, wait["win"], remember or method == "trust")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _connect_failed(self, rid, method, code, err, wait_win):
+        if wait_win:
+            wait_win.destroy()
         self.connect_btn.config(state="normal", text=T("התחבר"))
+        if method == "trust" and code == "not_trusted":
+            self.reload_cfg()
+            if rid in self.cfg.get("saved", {}):
+                self.cfg["saved"][rid].pop("trust_key", None)
+                core.save_config(self.cfg)
+                self.refresh_lists()
+            self.ask_how_to_connect(rid, "ההרשאה למחשב הזה בוטלה. התחבר שוב עם סיסמה או בקש אישור.")
+            return
         error(f"החיבור נכשל:\n{err}")
 
-    def _open_viewer(self, rid, sess, holder):
+    def _viewer_message(self, rid, m, holder):
+        if m.get("type") == "trust_grant":
+            self.reload_cfg()
+            entry = self.cfg.setdefault("saved", {}).setdefault(rid, {})
+            entry["trust_key"] = m.get("key")
+            entry.setdefault("name", m.get("host_name") or core.format_id(rid))
+            core.save_config(self.cfg)
+            self.refresh_lists()
+            return
+        if "w" in holder:
+            holder["w"].handle_message(m)
+
+    def _open_viewer(self, rid, sess, holder, wait_win, save):
+        if wait_win:
+            wait_win.destroy()
         self.connect_btn.config(state="normal", text=T("התחבר"))
         self.reload_cfg()
         recent = [rid] + [r for r in self.cfg.get("recent", []) if r != rid]
         self.cfg["recent"] = recent[:10]
+        if save:
+            entry = self.cfg.setdefault("saved", {}).setdefault(rid, {})
+            entry.setdefault("name", sess.remote_name or core.format_id(rid))
         core.save_config(self.cfg)
         self.remote_combo["values"] = self.cfg["recent"]
-        holder["w"] = ViewerWindow(self, sess, T(f"{APP_NAME} - {core.format_id(rid)}"))
+        self.refresh_lists()
+        name = sess.remote_name or core.format_id(rid)
+        holder["w"] = ViewerWindow(self, sess, T(f"{APP_NAME} - {name}"))
         sess.start()
 
     def on_exit(self):

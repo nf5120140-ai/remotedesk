@@ -16,6 +16,7 @@ import hmac
 import io
 import json
 import os
+import platform
 import re
 import secrets
 import struct
@@ -26,6 +27,8 @@ import time
 import zlib
 from pathlib import Path
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect as ws_connect
@@ -57,7 +60,14 @@ ERRORS = {
     "impostor": "המחשב המרוחק לא עבר בדיקת זהות (ייתכן ניסיון התחזות)",
     "protocol": "תשובה לא צפויה מהמחשב המרוחק",
     "refused": "החיבור נדחה",
+    "not_trusted": "המחשב הזה כבר לא מורשה להיכנס למחשב המרוחק. יש להתחבר שוב עם סיסמה או אישור",
+    "declined": "המשתמש במחשב המרוחק דחה את הבקשה",
+    "no_approver": "אין מי שיאשר במחשב המרוחק (אף אחד לא מחובר אליו). התחבר עם סיסמה",
+    "approval_timeout": "לא התקבל אישור מהמחשב המרוחק בזמן",
+    "too_many_requests": "נשלחו יותר מדי בקשות אישור. נסה שוב בעוד כמה דקות",
 }
+
+APPROVAL_TIMEOUT = 45
 
 
 # --------------------------------------------------------------------------
@@ -98,6 +108,10 @@ def load_config():
         "fps": 15,
         "monitor": 1,
         "recent": [],
+        "device_id": secrets.token_hex(16),
+        "device_name": platform.node() or "Computer",
+        "trusted": {},      # viewers allowed into THIS computer: device_id -> {key, name, added}
+        "saved": {},        # computers THIS computer can enter: host_id -> {name, trust_key}
     }
     for k, v in defaults.items():
         if k not in cfg:
@@ -158,6 +172,29 @@ def derive_key(password, host_id):
 
 def proof(key, label, *parts):
     return hmac.new(key, label.encode() + b"|" + b"|".join(parts), hashlib.sha256).hexdigest()
+
+
+def ecdh_keypair():
+    priv = ec.generate_private_key(ec.SECP256R1())
+    pub = priv.public_key().public_bytes(serialization.Encoding.X962,
+                                         serialization.PublicFormat.UncompressedPoint)
+    return priv, pub
+
+
+def ecdh_key(priv, peer_pub_hex, hnonce: bytes, vnonce: bytes):
+    peer = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), bytes.fromhex(peer_pub_hex))
+    shared = priv.exchange(ec.ECDH(), peer)
+    return hashlib.sha256(b"remotedesk-ecdh|" + shared + b"|" + hnonce + b"|" + vnonce).digest()
+
+
+def verification_code(key):
+    """6-digit code shown on both screens - must match (detects a man in the middle)."""
+    n = int.from_bytes(hashlib.sha256(b"code|" + key).digest()[:4], "big") % 1_000_000
+    return f"{n:06d}"[:3] + " " + f"{n:06d}"[3:]
+
+
+def session_key(key, hnonce: bytes, vnonce: bytes):
+    return hmac.new(key, b"session|" + hnonce + b"|" + vnonce, hashlib.sha256).digest()
 
 
 class SecureChannel:
@@ -380,8 +417,13 @@ class HostService(threading.Thread):
     """
 
     def __init__(self, cfg, on_status=None, on_session=None, desktop_hook=None,
-                 cad_hook=None, download_dir=None):
+                 cad_hook=None, download_dir=None, on_request=None):
+        """on_request(info) -> (accept, always): called (blocking, from this
+        thread) when a remote computer asks for access without a password.
+        info = {name, ip, code}. None = nobody here to approve."""
         super().__init__(daemon=True)
+        self.on_request = on_request
+        self.requests = []
         self.cfg = cfg
         self.on_status = on_status or (lambda *a: None)
         self.on_session = on_session or (lambda *a: None)
@@ -483,30 +525,84 @@ class HostService(threading.Thread):
                 self._end_session()
                 peer_ip = m.get("ip", "?")
                 pending = secrets.token_hex(16)
-                ws.send(json.dumps({"type": "challenge", "nonce": pending, "version": 2}))
+                ws.send(json.dumps({"type": "challenge", "nonce": pending, "version": 3,
+                                    "name": self.cfg.get("device_name", ""),
+                                    "methods": ["password", "trust", "request"]}))
             elif t == "auth" and pending:
-                now = time.time()
-                self.failures = [f for f in self.failures if now - f < 300]
-                locked = len(self.failures) >= 5
-                vnonce = str(m.get("vnonce", ""))[:64]
-                expected = proof(key, "viewer", pending.encode(), vnonce.encode())
-                if not locked and hmac.compare_digest(expected, str(m.get("proof", ""))):
-                    sess_key = hmac.new(key, b"session|" + pending.encode() + b"|" + vnonce.encode(),
-                                        hashlib.sha256).digest()
-                    ws.send(json.dumps({"type": "auth_ok",
-                                        "proof": proof(key, "host", pending.encode(), vnonce.encode())}))
-                    self.chan = SecureChannel(ws, sess_key, i_am_host=True)
-                    pending = None
-                    self._start_session(peer_ip)
-                else:
-                    if not locked:
-                        self.failures.append(now)
-                    ws.send(json.dumps({"type": "auth_fail",
-                                        "code": "locked" if locked else "wrong_password"}))
-                    pending = None
+                hn, vn = pending.encode(), str(m.get("vnonce", ""))[:64].encode()
+                pending = None
+                self._authenticate(ws, m, hn, vn, key, peer_ip)
             elif t == "peer_left":
                 pending = None
                 self._end_session()
+
+    def _authenticate(self, ws, m, hn, vn, pw_key, peer_ip):
+        now = time.time()
+        self.failures = [f for f in self.failures if now - f < 300]
+        locked = len(self.failures) >= 5
+        method = m.get("method", "password")
+        device = str(m.get("device", ""))[:64]
+        dev_name = str(m.get("device_name", "") or "מחשב לא ידוע")[:60]
+
+        def fail(code, count=True):
+            if count and not locked:
+                self.failures.append(now)
+            ws.send(json.dumps({"type": "auth_fail", "code": code}))
+
+        grant = False
+        if method == "password":
+            if locked:
+                return fail("locked")
+            if not hmac.compare_digest(proof(pw_key, "viewer", hn, vn), str(m.get("proof", ""))):
+                return fail("wrong_password")
+            key = pw_key
+            grant = bool(m.get("remember")) and bool(device)
+        elif method == "trust":
+            if locked:
+                return fail("locked")
+            entry = load_config().get("trusted", {}).get(device)
+            if not entry:
+                return fail("not_trusted", count=False)
+            key = bytes.fromhex(entry["key"])
+            if not hmac.compare_digest(proof(key, "viewer", hn, vn), str(m.get("proof", ""))):
+                return fail("not_trusted")
+        elif method == "request":
+            self.requests = [r for r in self.requests if now - r < 120]
+            if self.on_request is None:
+                return fail("no_approver", count=False)
+            if len(self.requests) >= 3:
+                return fail("too_many_requests", count=False)
+            self.requests.append(now)
+            try:
+                priv, pub = ecdh_keypair()
+                key = ecdh_key(priv, str(m.get("pub", "")), hn, vn)
+            except Exception:
+                return fail("protocol", count=False)
+            ws.send(json.dumps({"type": "pending", "pub": pub.hex()}))
+            try:
+                accept, always = self.on_request({"name": dev_name, "ip": peer_ip,
+                                                  "code": verification_code(key)})
+            except Exception:
+                accept, always = False, False
+            if accept is None:
+                return fail("approval_timeout", count=False)
+            if not accept:
+                return fail("declined", count=False)
+            grant = bool(always) and bool(device)
+        else:
+            return fail("protocol", count=False)
+
+        ws.send(json.dumps({"type": "auth_ok", "proof": proof(key, "host", hn, vn)}))
+        self.chan = SecureChannel(ws, session_key(key, hn, vn), i_am_host=True)
+        if grant:
+            tk = secrets.token_bytes(32)
+            cfg = load_config()
+            cfg.setdefault("trusted", {})[device] = {"key": tk.hex(), "name": dev_name,
+                                                     "added": int(now)}
+            save_config(cfg)
+            self.chan.send_json(type="trust_grant", key=tk.hex(),
+                                host_name=self.cfg.get("device_name", ""))
+        self._start_session(peer_ip)
 
     def _start_session(self, ip):
         if self.injector is None:
@@ -673,12 +769,14 @@ class ScreenStreamer(threading.Thread):
 # Viewer: connects to a remote ID
 # --------------------------------------------------------------------------
 class AuthError(Exception):
-    pass
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
 
 
 def _err(reply, default="refused"):
     code = reply.get("code") or default
-    return AuthError(ERRORS.get(code, reply.get("message") or ERRORS[default]))
+    return AuthError(ERRORS.get(code, reply.get("message") or ERRORS[default]), code)
 
 
 class ViewerSession(threading.Thread):
@@ -695,10 +793,15 @@ class ViewerSession(threading.Thread):
         self.ws = None
         self.chan = None
         self.closed = False
+        self.remote_name = ""
         self.file_lock = threading.Lock()
 
-    def handshake(self):
-        """Blocking: connect + mutual auth. Raises on failure."""
+    def handshake(self, method="password", trust_key=None, remember=False,
+                  device_id="", device_name="", on_code=None):
+        """Blocking: connect + mutual auth. Raises AuthError on failure.
+        method: "password" | "trust" (saved computer) | "request" (ask the
+        other side to approve). on_code(code) is called while waiting for
+        approval so the user can compare the verification code."""
         self.ws = ws_connect(self.server, max_size=16 * 1024 * 1024, open_timeout=10,
                              ping_interval=20, ping_timeout=40)
         ws = self.ws
@@ -709,18 +812,36 @@ class ViewerSession(threading.Thread):
         r = json.loads(ws.recv(timeout=15))
         if r.get("type") != "challenge":
             raise _err(r, "protocol")
-        key = derive_key(self.password, self.host_id)
-        hnonce = r["nonce"].encode()
-        vnonce = secrets.token_hex(16)
-        ws.send(json.dumps({"type": "auth", "vnonce": vnonce,
-                            "proof": proof(key, "viewer", hnonce, vnonce.encode())}))
+        self.remote_name = r.get("name", "")
+        hn, vn = r["nonce"].encode(), secrets.token_hex(16)
+        msg = {"type": "auth", "method": method, "vnonce": vn,
+               "device": device_id, "device_name": device_name}
+        if method == "password":
+            key = derive_key(self.password, self.host_id)
+            msg.update(proof=proof(key, "viewer", hn, vn.encode()), remember=bool(remember))
+        elif method == "trust":
+            key = bytes.fromhex(trust_key)
+            msg["proof"] = proof(key, "viewer", hn, vn.encode())
+        else:
+            priv, pub = ecdh_keypair()
+            msg["pub"] = pub.hex()
+        ws.send(json.dumps(msg))
         r = json.loads(ws.recv(timeout=15))
+        if method == "request":
+            if r.get("type") != "pending":
+                raise _err(r, "protocol")
+            key = ecdh_key(priv, r["pub"], hn, vn.encode())
+            if on_code:
+                on_code(verification_code(key))
+            r = json.loads(ws.recv(timeout=APPROVAL_TIMEOUT + 15))
         if r.get("type") != "auth_ok":
             raise _err(r, "wrong_password")
-        if not hmac.compare_digest(r.get("proof", ""), proof(key, "host", hnonce, vnonce.encode())):
-            raise AuthError(ERRORS["impostor"])
-        sess_key = hmac.new(key, b"session|" + hnonce + b"|" + vnonce.encode(), hashlib.sha256).digest()
-        self.chan = SecureChannel(ws, sess_key, i_am_host=False)
+        if not hmac.compare_digest(r.get("proof", ""), proof(key, "host", hn, vn.encode())):
+            raise AuthError(ERRORS["impostor"], "impostor")
+        self.chan = SecureChannel(ws, session_key(key, hn, vn.encode()), i_am_host=False)
+
+    def cancel(self):
+        self.close()
 
     def run(self):
         reason = "החיבור נסגר"

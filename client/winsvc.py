@@ -419,10 +419,18 @@ def run_agent():
         if "root" in banner:
             banner["root"].after(0, show_banner, active, ip)
 
+    def ask_user(info):
+        # approval dialog on the user's desktop (nobody can answer on the login screen -> timeout)
+        if "root" not in banner:
+            return (None, False)
+        import approval
+        return approval.ask(banner["root"], info)
+
     def make_host():
         cfg = core.load_config()
         h = core.HostService(cfg, on_status, on_session, desktop_hook=follow_input_desktop,
-                             cad_hook=request_sas, download_dir=core.public_download_dir())
+                             cad_hook=request_sas, download_dir=core.public_download_dir(),
+                             on_request=ask_user)
         h.start()
         return h
 
