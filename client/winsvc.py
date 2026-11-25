@@ -63,6 +63,7 @@ def relaunch_as_admin():
     else:
         exe = sys.executable.replace("python.exe", "pythonw.exe")
         params = [os.path.abspath(sys.argv[0])] + sys.argv[1:]
+    os.environ["PYINSTALLER_RESET_ENVIRONMENT"] = "1"      # independent copy, see app.py
     r = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe,
                                             subprocess.list2cmdline(params), None, 1)
     return r > 32

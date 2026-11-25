@@ -539,7 +539,12 @@ class App(tk.Tk):
         import subprocess
         if self.host:
             self.host.stop()
-        subprocess.Popen([sys.executable], close_fds=True)
+        # A fresh, independent copy: it must not reuse this process's temporary
+        # files (they are deleted when this window closes).
+        env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
+        for k in [k for k in env if k.startswith("_PYI") or k.startswith("_MEI")]:
+            env.pop(k, None)
+        subprocess.Popen([sys.executable], close_fds=True, env=env)
         self.destroy()
 
     # ---------------------------------------------------------------- actions
