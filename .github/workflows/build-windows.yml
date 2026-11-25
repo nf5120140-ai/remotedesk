@@ -76,7 +76,7 @@ jobs:
             client/dist/RemoteDesk-Setup.exe
             client/dist/RemoteDesk.exe
 
-      - name: Publish release (permanent link: releases/latest/download/RemoteDesk-Setup.exe)
+      - name: Publish release (permanent download link)
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
