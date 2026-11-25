@@ -160,6 +160,21 @@ def _launch_agent_in_session(session_id):
     return hp
 
 
+def _kill_all_agents():
+    """Kill every 'RemoteDesk.exe --agent' process (old versions included)."""
+    ps = ("Get-CimInstance Win32_Process -Filter \"Name='RemoteDesk.exe'\" | "
+          "Where-Object { $_.CommandLine -like '*--agent*' } | "
+          "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $_.ProcessId }")
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                           capture_output=True, text=True, timeout=60, creationflags=NO_WINDOW)
+        killed = r.stdout.split()
+        if killed:
+            log(f"killed stray agents: {' '.join(killed)}")
+    except Exception as e:
+        log(f"agent cleanup failed: {e!r}")
+
+
 def _kill_stale_agent():
     """After a service restart (e.g. an update) an old agent may still run."""
     try:
@@ -242,6 +257,7 @@ def _supervise(stop_event):
         ver = "?"
     log(f"service started (version {ver})")
     _kill_stale_agent()
+    _kill_all_agents()
     upd = _AutoUpdater()
     upd.start()
     while True:

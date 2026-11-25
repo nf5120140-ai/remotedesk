@@ -42,6 +42,7 @@ hosts: dict[str, Host] = {}
 # ---- diagnostics: last events per ID (no content, only connect/disconnect info)
 from collections import deque
 events: dict[str, deque] = defaultdict(lambda: deque(maxlen=40))
+replaced: dict[str, list] = defaultdict(list)
 
 
 def who_closed(ws):
@@ -129,7 +130,19 @@ async def handle_host(ws, host_id, secret):
         return
     old = hosts.get(host_id)
     if old is not None:
-        # Same ID re-registering (e.g. reconnect after network drop): replace.
+        # Same ID re-registering. Normally a reconnect after a network drop
+        # (the old socket is dead) -> replace it. But if it keeps happening,
+        # two copies of the program are running on that computer and would
+        # kick each other forever - keep the existing one, refuse the newcomer.
+        now = time.time()
+        flaps = [t for t in replaced[host_id] if now - t < 120]
+        replaced[host_id] = flaps
+        if len(flaps) >= 3:
+            record(host_id, f"duplicate host refused (from {client_ip(ws)})")
+            await send_json(ws, type="error", code="duplicate",
+                            message="this ID is already connected from another running copy")
+            return
+        flaps.append(now)
         record(host_id, f"host replaced by a new connection from {client_ip(ws)}")
         await old.ws.close()
     host = Host(ws, host_id)

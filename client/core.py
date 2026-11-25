@@ -251,6 +251,41 @@ def set_dpi_aware():
 
 
 # --------------------------------------------------------------------------
+# One host per computer (the service agent and a window must never both host)
+# --------------------------------------------------------------------------
+HOST_LOCK_NAME = "Global\\RemoteDeskHostLock"
+
+
+def acquire_host_lock():
+    """Returns a handle if this process may host, None if another copy already does."""
+    if not IS_WIN:
+        return True
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateMutexW.restype = wintypes.HANDLE
+    k.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    h = k.CreateMutexW(None, False, HOST_LOCK_NAME)
+    err = ctypes.get_last_error()
+    if not h:                       # access denied -> exists, owned by SYSTEM (the service)
+        return None
+    if err == 183:                  # ERROR_ALREADY_EXISTS
+        k.CloseHandle(h)
+        return None
+    return h
+
+
+def release_host_lock(h):
+    if IS_WIN and h and h is not True:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.WinDLL("kernel32")
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
+        k.CloseHandle(h)
+
+
+# --------------------------------------------------------------------------
 # Input injection (host side)
 # --------------------------------------------------------------------------
 class InputInjector:
@@ -461,9 +496,22 @@ class HostService(threading.Thread):
             pass
 
     def run(self):
+        lock = None
+        while not self.stop_flag.is_set():
+            lock = acquire_host_lock()
+            if lock:
+                break
+            self.on_status("RemoteDesk כבר מקבל חיבורים במחשב הזה (בשירות המערכת)", True)
+            self.stop_flag.wait(5)
+        try:
+            self._run()
+        finally:
+            release_host_lock(lock)
+
+    def _run(self):
         backoff = 1
         while not self.stop_flag.is_set():
-            if not has_password(self.cfg):
+            if not has_password(self.cfg) and not self.cfg.get("trusted") and self.on_request is None:
                 self.on_status("יש להגדיר סיסמה כדי לאפשר גישה מרחוק", False)
                 self.stop_flag.wait(1)
                 continue
@@ -476,6 +524,10 @@ class HostService(threading.Thread):
                                         "secret": self.cfg["secret"]}))
                     reply = json.loads(ws.recv(timeout=15))
                     if reply.get("type") != "registered":
+                        if reply.get("code") == "duplicate":
+                            self.on_status("RemoteDesk פועל פעמיים במחשב הזה. סגור עותקים ישנים או הפעל מחדש את המחשב", False)
+                            self.stop_flag.wait(60)
+                            continue
                         if reply.get("code") == "id_taken":
                             self.cfg["id"] = new_id()
                             save_config(self.cfg)
