@@ -1,0 +1,681 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#c62828">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="RemoteDesk">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>RemoteDesk</title>
+<style>
+  :root {
+    --red: #c62828; --bg: #f4f5f7; --card: #fff; --text: #1d1f23; --muted: #6b7280;
+    --border: #e2e4e8; --bar: #1d1f23; --bar-text: #fff; --key: #2d3036; --key-on: #c62828;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #121316; --card: #1d1f23; --text: #eceef1; --muted: #9aa0a8; --border: #33363c; }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif; }
+  body { overscroll-behavior: none; }
+  button, input, select { font: inherit; }
+
+  /* ---------- login screen ---------- */
+  #login { min-height: 100%; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; padding: 24px 16px; }
+  .card { width: 100%; max-width: 380px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 16px; padding: 24px 20px; }
+  .logo { display: flex; align-items: center; gap: 10px; justify-content: center; margin-bottom: 20px; }
+  .logo img { width: 44px; height: 44px; border-radius: 10px; }
+  .logo h1 { font-size: 24px; margin: 0; }
+  label { display: block; font-size: 14px; color: var(--muted); margin: 14px 0 6px; }
+  .field { width: 100%; padding: 12px 14px; font-size: 18px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+  #rid { direction: ltr; text-align: center; font-size: 26px; letter-spacing: 3px; font-weight: 600; }
+  #pw { direction: ltr; text-align: center; }
+  .primary { width: 100%; margin-top: 20px; padding: 14px; font-size: 18px; font-weight: 600;
+    border: 0; border-radius: 10px; background: var(--red); color: #fff; }
+  .primary:disabled { opacity: .6; }
+  #err { color: var(--red); min-height: 22px; margin-top: 12px; text-align: center; font-size: 15px; }
+  #recent { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; justify-content: center; }
+  #recent button { direction: ltr; border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    border-radius: 999px; padding: 6px 12px; font-size: 14px; }
+  .hint { color: var(--muted); font-size: 13px; text-align: center; margin-top: 18px; line-height: 1.5; }
+
+  /* ---------- session screen ---------- */
+  #session { display: none; position: fixed; inset: 0; background: #000; flex-direction: column; }
+  #screen { flex: 1; width: 100%; touch-action: none; display: block; }
+  #wrap { position: relative; flex: 1; display: flex; min-height: 0; }
+  .bar { display: flex; gap: 4px; padding: 6px; padding-bottom: max(6px, env(safe-area-inset-bottom));
+    background: var(--bar); overflow-x: auto; scrollbar-width: none; flex-shrink: 0; }
+  .bar::-webkit-scrollbar { display: none; }
+  .bar button, .bar select { flex-shrink: 0; min-width: 44px; height: 40px; border: 0; border-radius: 8px;
+    background: var(--key); color: var(--bar-text); font-size: 15px; padding: 0 10px; }
+  .bar button.on { background: var(--key-on); }
+  #keys { display: none; direction: ltr; padding-bottom: 6px; }
+  #keys.show { display: flex; }
+  #toast { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.8);
+    color: #fff; padding: 8px 14px; border-radius: 999px; font-size: 14px; pointer-events: none;
+    opacity: 0; transition: opacity .2s; white-space: nowrap; max-width: 92%; overflow: hidden; text-overflow: ellipsis; }
+  #toast.show { opacity: 1; }
+  #kbd { position: fixed; bottom: 0; left: 0; width: 1px; height: 1px; opacity: 0; font-size: 16px;
+    border: 0; padding: 0; resize: none; }
+  #status { color: #9aa0a8; font-size: 12px; align-self: center; padding: 0 6px; white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <div class="card">
+    <div class="logo"><img src="icon-192.png" alt=""><h1>RemoteDesk</h1></div>
+    <form id="form" autocomplete="on">
+      <label for="rid">מספר המחשב המרוחק</label>
+      <input id="rid" class="field" inputmode="numeric" pattern="[0-9 ]*" maxlength="11"
+             placeholder="000 000 000" autocomplete="off">
+      <div id="recent"></div>
+      <label for="pw">סיסמה</label>
+      <input id="pw" class="field" type="password" autocomplete="current-password">
+      <button id="go" class="primary" type="submit">התחבר</button>
+      <div id="err"></div>
+    </form>
+    <div class="hint">החיבור מוצפן מקצה לקצה 🔒<br>
+      להוספה למסך הבית: בתפריט הדפדפן ← "הוסף למסך הבית"</div>
+  </div>
+</div>
+
+<div id="session">
+  <div id="wrap">
+    <canvas id="screen"></canvas>
+    <div id="toast"></div>
+  </div>
+  <div id="keys" class="bar">
+    <button data-mod="Control_L">Ctrl</button>
+    <button data-mod="Alt_L">Alt</button>
+    <button data-mod="Shift_L">Shift</button>
+    <button data-mod="Super_L">⊞ Win</button>
+    <button data-key="Escape">Esc</button>
+    <button data-key="Tab">Tab</button>
+    <button data-key="Return">Enter</button>
+    <button data-key="BackSpace">⌫</button>
+    <button data-key="Delete">Del</button>
+    <button data-key="Left">←</button>
+    <button data-key="Up">↑</button>
+    <button data-key="Down">↓</button>
+    <button data-key="Right">→</button>
+    <button data-key="Home">Home</button>
+    <button data-key="End">End</button>
+    <button data-key="Prior">PgUp</button>
+    <button data-key="Next">PgDn</button>
+    <button data-wheel="1">גלגלת ▲</button>
+    <button data-wheel="-1">גלגלת ▼</button>
+    <button data-key="F1">F1</button><button data-key="F2">F2</button><button data-key="F3">F3</button>
+    <button data-key="F4">F4</button><button data-key="F5">F5</button><button data-key="F6">F6</button>
+    <button data-key="F7">F7</button><button data-key="F8">F8</button><button data-key="F9">F9</button>
+    <button data-key="F10">F10</button><button data-key="F11">F11</button><button data-key="F12">F12</button>
+  </div>
+  <div class="bar" id="main-bar">
+    <button id="b-kbd" title="מקלדת">⌨️</button>
+    <button id="b-keys" title="מקשים מיוחדים">Ctrl/Esc</button>
+    <button id="b-mode" title="מצב מגע">👆 מגע ישיר</button>
+    <button id="b-cad">Ctrl+Alt+Del</button>
+    <button id="b-file">📁 שלח קובץ</button>
+    <select id="b-quality" title="איכות">
+      <option value="35,1280">איכות: מהיר</option>
+      <option value="60,1600" selected>איכות: מאוזן</option>
+      <option value="85,2560">איכות: גבוה</option>
+    </select>
+    <select id="b-monitor" title="מסך"><option value="1">מסך 1</option></select>
+    <button id="b-full" title="מסך מלא">⛶</button>
+    <button id="b-help" title="עזרה">?</button>
+    <button id="b-exit" style="background:#c62828">✕ ניתוק</button>
+    <span id="status"></span>
+  </div>
+  <textarea id="kbd" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+  <input id="file" type="file" hidden>
+</div>
+
+<script>
+"use strict";
+// =====================================================================
+// Protocol + crypto (must match client/core.py)
+// =====================================================================
+const PBKDF2_ROUNDS = 200000;
+const MSG_JSON = 0, MSG_FRAME = 1, MSG_FILE = 2;
+const FILE_CHUNK = 256 * 1024;
+const ERRORS = {
+  offline: "המחשב המרוחק כבוי, לא מחובר לאינטרנט, או שהמספר שגוי",
+  busy: "המחשב המרוחק כבר נמצא בחיבור אחר",
+  rate: "יותר מדי ניסיונות. נסה שוב בעוד דקה",
+  wrong_password: "סיסמה שגויה",
+  locked: "המחשב המרוחק ננעל ל-5 דקות בגלל יותר מדי סיסמאות שגויות",
+  impostor: "המחשב המרוחק לא עבר בדיקת זהות (ייתכן ניסיון התחזות)",
+  protocol: "תשובה לא צפויה מהמחשב המרוחק",
+  refused: "החיבור נדחה",
+};
+const enc = new TextEncoder(), dec = new TextDecoder();
+const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+const randHex = (n) => hex(crypto.getRandomValues(new Uint8Array(n)));
+
+async function deriveKey(password, id) {
+  const base = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
+  return crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: enc.encode("remotedesk:" + id),
+                                    iterations: PBKDF2_ROUNDS }, base, 256);
+}
+async function hmac(keyBytes, text) {
+  const k = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return crypto.subtle.sign("HMAC", k, enc.encode(text));
+}
+
+class Session {
+  constructor(handlers) {
+    this.h = handlers;            // onFrame(bitmapBlob), onMessage(obj), onClosed(reason)
+    this.sendChain = Promise.resolve();
+    this.recvChain = Promise.resolve();
+    this.sendCtr = 0n; this.recvCtr = -1n;
+    this.closed = false;
+  }
+  recvText(timeout = 15000) {
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("timeout")), timeout);
+      this.waiter = (m) => { clearTimeout(t); resolve(JSON.parse(m)); };
+      this.failer = (e) => { clearTimeout(t); reject(e); };
+    });
+  }
+  async connect(id, password) {
+    const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/";
+    const ws = this.ws = new WebSocket(url);
+    ws.binaryType = "arraybuffer";
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === "string") { if (this.waiter) { const w = this.waiter; this.waiter = null; w(ev.data); } }
+      else if (this.aes) this.onBinary(ev.data);
+    };
+    ws.onclose = () => {
+      if (this.failer) { const f = this.failer; this.failer = null; f(new Error("אין חיבור לשרת")); }
+      if (this.aes && !this.closed) { this.closed = true; this.h.onClosed(this.byeReason || "החיבור נסגר"); }
+      this.closed = true;
+    };
+    await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error("אין חיבור לשרת")); });
+    const keyP = deriveKey(password, id);          // start PBKDF2 while waiting
+    const first = this.recvText();
+    ws.send(JSON.stringify({ type: "connect", id }));
+    let r = await first;
+    if (r.type !== "connected") throw new Error(ERRORS[r.code] || r.message || ERRORS.refused);
+    r = await this.recvText();
+    if (r.type !== "challenge") throw new Error(ERRORS[r.code] || ERRORS.protocol);
+    const key = await keyP;
+    const hn = r.nonce, vn = randHex(16);
+    const reply = this.recvText();
+    ws.send(JSON.stringify({ type: "auth", vnonce: vn, proof: hex(await hmac(key, `viewer|${hn}|${vn}`)) }));
+    r = await reply;
+    if (r.type !== "auth_ok") throw new Error(ERRORS[r.code] || ERRORS.wrong_password);
+    if (r.proof !== hex(await hmac(key, `host|${hn}|${vn}`))) throw new Error(ERRORS.impostor);
+    const sess = await hmac(key, `session|${hn}|${vn}`);
+    this.aes = await crypto.subtle.importKey("raw", sess, "AES-GCM", false, ["encrypt", "decrypt"]);
+    this.failer = this.waiter = null;
+  }
+  nonce(dir, ctr) {
+    const n = new Uint8Array(12); n[0] = dir;
+    new DataView(n.buffer).setBigUint64(4, ctr);
+    return n;
+  }
+  sendRaw(kind, payload) {
+    if (this.closed) return Promise.resolve();
+    const ctr = ++this.sendCtr;
+    this.sendChain = this.sendChain.then(async () => {
+      const pt = new Uint8Array(payload.byteLength + 1); pt[0] = kind; pt.set(new Uint8Array(payload), 1);
+      const n = this.nonce(2, ctr);
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: n }, this.aes, pt));
+      const out = new Uint8Array(12 + ct.length); out.set(n); out.set(ct, 12);
+      if (this.ws.readyState === 1) this.ws.send(out);
+    }).catch(() => {});
+    return this.sendChain;
+  }
+  send(obj) { return this.sendRaw(MSG_JSON, enc.encode(JSON.stringify(obj))); }
+  onBinary(buf) {
+    this.recvChain = this.recvChain.then(async () => {
+      const d = new Uint8Array(buf);
+      if (d.length < 29) return;
+      const dv = new DataView(d.buffer);
+      const ctr = dv.getBigUint64(4);
+      if (d[0] !== 1 || ctr <= this.recvCtr) return;
+      let pt;
+      try { pt = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: d.slice(0, 12) }, this.aes, d.slice(12))); }
+      catch { return; }
+      this.recvCtr = ctr;
+      if (pt[0] === MSG_FRAME) this.h.onFrame(pt.subarray(1));
+      else if (pt[0] === MSG_JSON) {
+        const m = JSON.parse(dec.decode(pt.subarray(1)));
+        if (m.type === "bye") this.byeReason = m.reason;
+        this.h.onMessage(m);
+      }
+    }).catch(() => {});
+  }
+  close() { this.closed = true; try { this.ws.close(); } catch {} }
+}
+
+// =====================================================================
+// Login screen
+// =====================================================================
+const $ = (id) => document.getElementById(id);
+const fmt = (id) => id.replace(/\D/g, "").replace(/(\d{3})(?=\d)/g, "$1 ").trim();
+function store(k, v) { try { if (v === undefined) return JSON.parse(localStorage.getItem(k)); localStorage.setItem(k, JSON.stringify(v)); } catch { return null; } }
+
+function renderRecent() {
+  const box = $("recent"); box.innerHTML = "";
+  for (const id of store("recent") || []) {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = fmt(id);
+    b.onclick = () => { $("rid").value = fmt(id); $("pw").focus(); };
+    box.appendChild(b);
+  }
+}
+renderRecent();
+$("rid").addEventListener("input", (e) => { e.target.value = fmt(e.target.value).slice(0, 11); });
+
+if (!window.crypto || !crypto.subtle) {
+  $("err").textContent = "הדף חייב להיפתח בכתובת מאובטחת (https://). בדוק את הגדרת השרת.";
+  $("go").disabled = true;
+}
+
+let session = null;
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = $("rid").value.replace(/\D/g, ""), pw = $("pw").value;
+  $("err").textContent = "";
+  if (id.length !== 9) { $("err").textContent = "הקלד מספר מחשב בן 9 ספרות"; return; }
+  if (!pw) { $("err").textContent = "הקלד סיסמה"; return; }
+  $("go").disabled = true; $("go").textContent = "מתחבר...";
+  const s = new Session({ onFrame, onMessage, onClosed });
+  try {
+    await s.connect(id, pw);
+  } catch (err) {
+    s.close();
+    $("err").textContent = err.message || "החיבור נכשל";
+    $("go").disabled = false; $("go").textContent = "התחבר";
+    return;
+  }
+  $("go").disabled = false; $("go").textContent = "התחבר";
+  $("pw").value = "";
+  store("recent", [id, ...(store("recent") || []).filter((x) => x !== id)].slice(0, 6));
+  renderRecent();
+  session = s;
+  startSession();
+});
+
+// =====================================================================
+// Session screen: drawing
+// =====================================================================
+const canvas = $("screen"), ctx = canvas.getContext("2d");
+let frame = null;                  // ImageBitmap of last frame
+let decoding = false, pendingFrame = null;
+let view = { zoom: 1, ox: 0, oy: 0 };   // zoom/pan on top of "fit"
+let box = { x: 0, y: 0, w: 1, h: 1 };   // where the remote screen is drawn (CSS px)
+let cursor = { x: 0.5, y: 0.5 };        // touchpad mode cursor (normalized)
+let mode = store("mode") || "direct";   // "direct" | "touchpad"
+let remote = { w: 0, h: 0 };
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const r = canvas.getBoundingClientRect();
+  canvas.width = Math.round(r.width * dpr); canvas.height = Math.round(r.height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+window.addEventListener("resize", () => setTimeout(resize, 50));
+
+function layout() {
+  const r = canvas.getBoundingClientRect();
+  if (!frame) return;
+  const fit = Math.min(r.width / frame.width, r.height / frame.height);
+  const s = fit * view.zoom;
+  const w = frame.width * s, h = frame.height * s;
+  // clamp pan so the image never leaves the screen completely
+  const maxX = Math.max(0, (w - r.width) / 2), maxY = Math.max(0, (h - r.height) / 2);
+  view.ox = Math.max(-maxX, Math.min(maxX, view.ox));
+  view.oy = Math.max(-maxY, Math.min(maxY, view.oy));
+  box = { x: (r.width - w) / 2 + view.ox, y: (r.height - h) / 2 + view.oy, w, h };
+}
+
+function draw() {
+  const r = canvas.getBoundingClientRect();
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, r.width, r.height);
+  if (!frame) return;
+  layout();
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(frame, box.x, box.y, box.w, box.h);
+  if (mode === "touchpad") {
+    const x = box.x + cursor.x * box.w, y = box.y + cursor.y * box.h;
+    ctx.save(); ctx.translate(x, y);
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 20); ctx.lineTo(5, 15); ctx.lineTo(9, 23);
+    ctx.lineTo(12, 22); ctx.lineTo(8, 14); ctx.lineTo(14, 14); ctx.closePath();
+    ctx.fillStyle = "#fff"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1.5; ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function onFrame(bytes) {
+  // keep only the newest frame; always ack so the host keeps streaming
+  if (decoding) {
+    if (pendingFrame) session && session.send({ type: "ack" });   // dropped frame
+    pendingFrame = bytes; return;
+  }
+  decoding = true;
+  createImageBitmap(new Blob([bytes], { type: "image/jpeg" })).then((bmp) => {
+    if (frame && frame.close) frame.close();
+    frame = bmp; draw();
+  }).catch(() => {}).finally(() => {
+    decoding = false;
+    session && session.send({ type: "ack" });
+    if (pendingFrame) { const p = pendingFrame; pendingFrame = null; onFrame(p); }
+  });
+}
+
+function onMessage(m) {
+  if (m.type === "screen") {
+    remote = { w: m.width, h: m.height };
+    const sel = $("b-monitor"); const n = Math.max(1, m.monitors || 1);
+    if (sel.options.length !== n) {
+      sel.innerHTML = "";
+      for (let i = 1; i <= n; i++) sel.add(new Option("מסך " + i, i));
+    }
+    sel.value = m.monitor || 1;
+    $("status").textContent = `${m.width}×${m.height} 🔒`;
+  } else if (m.type === "file_done") toast("✅ הקובץ התקבל: " + (m.path || ""), 4000);
+  else if (m.type === "file_error") toast("❌ שליחת הקובץ נכשלה: " + (m.message || ""), 4000);
+}
+
+function onClosed(reason) {
+  endSession();
+  $("err").textContent = "החיבור הסתיים: " + reason;
+}
+
+let toastTimer;
+function toast(text, ms = 1800) {
+  const t = $("toast"); t.textContent = text; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), ms);
+}
+
+function startSession() {
+  $("login").style.display = "none";
+  $("session").style.display = "flex";
+  view = { zoom: 1, ox: 0, oy: 0 };
+  setMode(mode, false);
+  resize();
+  toast(mode === "direct" ? "נגיעה = לחיצה · לחיצה ארוכה = לחצן ימני · שתי אצבעות = זום" :
+                            "גרור = הזזת סמן · נגיעה = לחיצה · שתי אצבעות = גלילה", 3500);
+  try { screen.orientation && screen.orientation.unlock && screen.orientation.unlock(); } catch {}
+}
+function endSession() {
+  if (session) { session.close(); session = null; }
+  $("session").style.display = "none";
+  $("login").style.display = "flex";
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  frame = null;
+}
+
+// =====================================================================
+// Input: mouse
+// =====================================================================
+const send = (m) => session && session.send(m);
+function toRemote(px, py) {      // CSS px on canvas -> normalized remote coords
+  return { x: (px - box.x) / box.w, y: (py - box.y) / box.h };
+}
+function inside(p) { return p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1; }
+const clamp01 = (v) => Math.max(0, Math.min(1, v));
+let lastMoveSent = 0, moveTimer = null, moveQueued = null;
+function moveTo(p, force) {     // throttled move (~60/s)
+  p = { x: +clamp01(p.x).toFixed(5), y: +clamp01(p.y).toFixed(5) };
+  const now = performance.now();
+  if (force || now - lastMoveSent > 16) {
+    lastMoveSent = now; clearTimeout(moveTimer); moveQueued = null;
+    send({ type: "move", ...p });
+  } else {
+    moveQueued = p;
+    clearTimeout(moveTimer);
+    moveTimer = setTimeout(() => { if (moveQueued) moveTo(moveQueued, true); }, 20);
+  }
+}
+function click(button, p) {
+  if (p) moveTo(p, true);
+  send({ type: "button", b: button, down: true });
+  send({ type: "button", b: button, down: false });
+}
+
+function setMode(m, announce = true) {
+  mode = m; store("mode", m);
+  $("b-mode").textContent = m === "direct" ? "👆 מגע ישיר" : "🖱️ משטח מגע";
+  if (m === "touchpad") view = { zoom: 1, ox: 0, oy: 0 };
+  draw();
+  if (announce) toast(m === "direct" ? "מגע ישיר: נגיעה = לחיצה במקום, לחיצה ארוכה = לחצן ימני, שתי אצבעות = זום" :
+                                       "משטח מגע: גרור להזזת הסמן, נגיעה = לחיצה, שתי אצבעות = גלילה / לחצן ימני", 3500);
+}
+$("b-mode").onclick = () => setMode(mode === "direct" ? "touchpad" : "direct");
+
+// ---- touch gestures
+const pt = (t) => { const r = canvas.getBoundingClientRect(); return { x: t.clientX - r.left, y: t.clientY - r.top }; };
+let g = null;   // current gesture state
+
+canvas.addEventListener("touchstart", (e) => {
+  e.preventDefault();
+  const ts = e.touches;
+  if (ts.length === 1 && !g) {
+    const p = pt(ts[0]);
+    g = { kind: "one", start: p, last: p, t0: performance.now(), moved: false, dragging: false, long: false, multi: false };
+    g.timer = setTimeout(() => {
+      if (!g || g.moved || g.multi) return;
+      g.long = true;
+      if (mode === "direct") { click("right", toRemote(p.x, p.y)); toast("לחצן ימני"); navigator.vibrate && navigator.vibrate(30); }
+      else { send({ type: "button", b: "left", down: true }); g.dragging = true; toast("גרירה"); navigator.vibrate && navigator.vibrate(30); }
+    }, 550);
+  } else if (ts.length === 2) {
+    if (!g) g = { t0: performance.now() };
+    clearTimeout(g.timer);
+    if (g.dragging) { send({ type: "button", b: "left", down: false }); g.dragging = false; }
+    const a = pt(ts[0]), b = pt(ts[1]);
+    Object.assign(g, {
+      kind: "two", multi: true, t2: performance.now(), moved2: false,
+      d0: Math.hypot(a.x - b.x, a.y - b.y), c0: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+      zoom0: view.zoom, ox0: view.ox, oy0: view.oy, scrollAcc: 0, lastCy: (a.y + b.y) / 2,
+    });
+  }
+}, { passive: false });
+
+canvas.addEventListener("touchmove", (e) => {
+  e.preventDefault();
+  if (!g) return;
+  const ts = e.touches;
+  if (g.kind === "one" && ts.length === 1) {
+    const p = pt(ts[0]);
+    if (!g.moved && Math.hypot(p.x - g.start.x, p.y - g.start.y) > 8) { g.moved = true; clearTimeout(g.timer); }
+    if (!g.moved) return;
+    if (mode === "direct") {
+      if (!g.dragging && !g.long) {      // finger drag = mouse drag
+        moveTo(toRemote(g.start.x, g.start.y), true);
+        send({ type: "button", b: "left", down: true });
+        g.dragging = true;
+      }
+      moveTo(toRemote(p.x, p.y));
+    } else {
+      // touchpad: relative movement with acceleration
+      const dx = p.x - g.last.x, dy = p.y - g.last.y;
+      const speed = Math.hypot(dx, dy);
+      const accel = 1.2 + Math.min(2.5, speed / 12);
+      cursor.x = clamp01(cursor.x + dx * accel / box.w);
+      cursor.y = clamp01(cursor.y + dy * accel / box.h);
+      moveTo(cursor); draw();
+    }
+    g.last = p;
+  } else if (g.kind === "two" && ts.length >= 2) {
+    const a = pt(ts[0]), b = pt(ts[1]);
+    const d = Math.hypot(a.x - b.x, a.y - b.y), c = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    if (Math.abs(d - g.d0) > 10 || Math.hypot(c.x - g.c0.x, c.y - g.c0.y) > 10) g.moved2 = true;
+    if (mode === "direct") {
+      // pinch zoom around the fingers + two-finger pan
+      const z = Math.max(1, Math.min(6, g.zoom0 * d / g.d0));
+      const r = canvas.getBoundingClientRect();
+      const cx0 = g.c0.x - r.width / 2 - g.ox0, cy0 = g.c0.y - r.height / 2 - g.oy0;
+      view.zoom = z;
+      view.ox = c.x - r.width / 2 - cx0 * z / g.zoom0;
+      view.oy = c.y - r.height / 2 - cy0 * z / g.zoom0;
+      draw();
+    } else {
+      // two-finger scroll
+      g.scrollAcc += c.y - g.lastCy; g.lastCy = c.y;
+      while (Math.abs(g.scrollAcc) >= 25) {
+        const dir = g.scrollAcc > 0 ? 1 : -1;
+        send({ type: "scroll", dy: dir });
+        g.scrollAcc -= dir * 25;
+      }
+    }
+  }
+}, { passive: false });
+
+function touchEnd(e) {
+  e.preventDefault();
+  if (!g) return;
+  const left = e.touches.length;
+  if (g.kind === "two" && !g.twoDone) {
+    g.twoDone = true;
+    if (!g.moved2 && performance.now() - g.t2 < 350) {   // two-finger tap = right click
+      if (mode === "touchpad") click("right", cursor);
+      else { const p = toRemote(g.c0.x, g.c0.y); if (inside(p)) click("right", p); }
+    }
+  }
+  if (left === 0) {
+    clearTimeout(g.timer);
+    if (g.kind === "one") {
+      if (g.dragging) send({ type: "button", b: "left", down: false });
+      else if (!g.moved && !g.long) {
+        if (mode === "direct") { const p = toRemote(g.start.x, g.start.y); if (inside(p)) click("left", p); }
+        else click("left", cursor);
+      }
+    }
+    g = null;
+  }
+}
+canvas.addEventListener("touchend", touchEnd, { passive: false });
+canvas.addEventListener("touchcancel", touchEnd, { passive: false });
+
+// ---- real mouse (tablet with mouse / desktop browser)
+canvas.addEventListener("mousemove", (e) => { const p = toRemote(e.offsetX, e.offsetY); if (inside(p)) moveTo(p); });
+canvas.addEventListener("mousedown", (e) => {
+  const p = toRemote(e.offsetX, e.offsetY); if (!inside(p)) return;
+  moveTo(p, true); send({ type: "button", b: ["left", "middle", "right"][e.button] || "left", down: true });
+});
+canvas.addEventListener("mouseup", (e) => send({ type: "button", b: ["left", "middle", "right"][e.button] || "left", down: false }));
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+canvas.addEventListener("wheel", (e) => { e.preventDefault(); send({ type: "scroll", dy: e.deltaY < 0 ? 1 : -1 }); }, { passive: false });
+
+// =====================================================================
+// Input: keyboard
+// =====================================================================
+const mods = new Set();
+function key(name, char = "") {
+  for (const m of mods) send({ type: "key", name: m, char: "", down: true });
+  send({ type: "key", name, char, down: true });
+  send({ type: "key", name, char, down: false });
+  for (const m of mods) send({ type: "key", name: m, char: "", down: false });
+  clearMods();
+}
+function clearMods() {
+  mods.clear();
+  document.querySelectorAll("[data-mod]").forEach((b) => b.classList.remove("on"));
+}
+function typeText(text) {
+  if (!text) return;
+  if (mods.size) { for (const ch of text) key(ch.toLowerCase(), ch); return; }   // e.g. Ctrl + c
+  send({ type: "type_text", text });
+}
+
+document.querySelectorAll("[data-key]").forEach((b) => b.addEventListener("click", () => key(b.dataset.key)));
+document.querySelectorAll("[data-wheel]").forEach((b) => b.addEventListener("click", () => send({ type: "scroll", dy: +b.dataset.wheel })));
+document.querySelectorAll("[data-mod]").forEach((b) => b.addEventListener("click", () => {
+  const m = b.dataset.mod;
+  if (mods.has(m)) { mods.delete(m); b.classList.remove("on"); } else { mods.add(m); b.classList.add("on"); }
+}));
+
+const kbd = $("kbd");
+const SENTINEL = "​​";
+function resetKbd() { kbd.value = SENTINEL; kbd.setSelectionRange(2, 2); }
+let composing = false;
+$("b-kbd").onclick = () => {
+  if (document.activeElement === kbd) { kbd.blur(); return; }
+  resetKbd(); kbd.focus();
+};
+kbd.addEventListener("compositionstart", () => { composing = true; });
+kbd.addEventListener("compositionend", (e) => { composing = false; typeText(e.data); resetKbd(); });
+kbd.addEventListener("input", (e) => {
+  if (composing || e.isComposing) return;
+  const t = e.inputType || "";
+  if (t.startsWith("delete")) key("BackSpace");
+  else if (t === "insertLineBreak" || t === "insertParagraph") key("Return");
+  else if (e.data) typeText(e.data);
+  else {
+    // fallback: diff against the sentinel
+    const v = kbd.value.replace(/​/g, "");
+    if (v.includes("\n")) key("Return"); else if (v) typeText(v);
+    else if (kbd.value.length < SENTINEL.length) key("BackSpace");
+  }
+  resetKbd();
+});
+kbd.addEventListener("keydown", (e) => {
+  // hardware keyboards (and Enter/Backspace on some phones)
+  const map = { Enter: "Return", Backspace: "BackSpace", Tab: "Tab", Escape: "Escape", ArrowLeft: "Left",
+                ArrowRight: "Right", ArrowUp: "Up", ArrowDown: "Down", Delete: "Delete", Home: "Home", End: "End",
+                PageUp: "Prior", PageDown: "Next" };
+  if (map[e.key]) { e.preventDefault(); key(map[e.key]); resetKbd(); }
+  else if ((e.ctrlKey || e.altKey || e.metaKey) && e.key.length === 1) {
+    e.preventDefault();
+    if (e.ctrlKey) mods.add("Control_L"); if (e.altKey) mods.add("Alt_L"); if (e.metaKey) mods.add("Super_L");
+    key(e.key.toLowerCase(), e.key);
+  }
+});
+
+$("b-keys").onclick = () => { $("keys").classList.toggle("show"); $("b-keys").classList.toggle("on"); setTimeout(resize, 50); };
+$("b-cad").onclick = () => { send({ type: "cad" }); toast("Ctrl+Alt+Del נשלח"); };
+$("b-quality").onchange = (e) => { const [q, w] = e.target.value.split(",").map(Number); send({ type: "settings", quality: q, max_width: w }); };
+$("b-monitor").onchange = (e) => send({ type: "settings", monitor: +e.target.value });
+$("b-full").onclick = () => {
+  const el = document.documentElement;
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else if (el.requestFullscreen) el.requestFullscreen().then(() => {
+    try { screen.orientation.lock("landscape").catch(() => {}); } catch {}
+  }).catch(() => toast("מסך מלא לא נתמך בדפדפן הזה"));
+  else toast("באייפון: הוסף למסך הבית לקבלת מסך מלא");
+};
+$("b-exit").onclick = () => { if (confirm("לנתק את החיבור?")) endSession(); };
+$("b-help").onclick = () => alert(
+  "👆 מגע ישיר:\n• נגיעה = לחיצה במקום\n• לחיצה ארוכה = לחצן ימני\n• גרירה באצבע אחת = גרירה עם העכבר\n• שתי אצבעות = זום והזזת התצוגה\n• נגיעה בשתי אצבעות = לחצן ימני\n\n" +
+  "🖱️ משטח מגע:\n• גרירה = הזזת הסמן\n• נגיעה = לחיצה\n• לחיצה ארוכה ואז גרירה = גרירה עם העכבר\n• שתי אצבעות למעלה/למטה = גלילה\n• נגיעה בשתי אצבעות = לחצן ימני\n\n" +
+  "⌨️ פותח את מקלדת הטלפון (כולל עברית)\nCtrl/Esc: מקשים מיוחדים. Ctrl, Alt, Shift ו-Win נשארים לחוצים עד המקש הבא (למשל Ctrl ואז c = העתק).");
+
+// ---- file upload
+$("b-file").onclick = () => $("file").click();
+$("file").onchange = async (e) => {
+  const f = e.target.files[0]; e.target.value = "";
+  if (!f || !session) return;
+  send({ type: "file_begin", name: f.name, size: f.size });
+  for (let off = 0; off < f.size; off += FILE_CHUNK) {
+    if (!session) return;
+    const buf = await f.slice(off, off + FILE_CHUNK).arrayBuffer();
+    await session.sendRaw(MSG_FILE, buf);
+    toast(`שולח ${f.name}... ${Math.round(Math.min(100, (off + buf.byteLength) * 100 / f.size))}%`, 5000);
+  }
+  send({ type: "file_end" });
+};
+
+// keep the screen awake during a session
+let wakeLock = null;
+async function keepAwake() { try { if (session && navigator.wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => { wakeLock = null; }); } } catch {} }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") keepAwake(); });
+setInterval(() => { if (session && !wakeLock) keepAwake(); }, 5000);
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+</script>
+</body>
+</html>

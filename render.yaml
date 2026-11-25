@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: remotedesk-relay
+    runtime: docker
+    rootDir: server
+    plan: free
+    healthCheckPath: /health
