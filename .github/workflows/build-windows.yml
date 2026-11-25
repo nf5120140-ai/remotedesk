@@ -19,9 +19,9 @@ jobs:
       run:
         working-directory: client
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -50,7 +50,24 @@ jobs:
           $env:APP_VERSION = $env:APP_VERSION.TrimStart('v')
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\RemoteDesk.iss
 
-      - uses: actions/upload-artifact@v4
+      - name: System service test (install, connect, capture, uninstall)
+        shell: pwsh
+        run: |
+          python -m pip install -r ..\server\requirements.txt
+          $relay = Start-Process python -ArgumentList "..\server\relay.py" -PassThru -WindowStyle Hidden
+          Start-Sleep 3
+          python tests\ci_service_test.py dist\RemoteDesk.exe test-output
+          $code = $LASTEXITCODE
+          Stop-Process $relay.Id -ErrorAction SilentlyContinue
+          exit $code
+
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: test-output
+          path: client/test-output
+
+      - uses: actions/upload-artifact@v5
         with:
           name: RemoteDesk-Windows
           path: |

@@ -526,11 +526,15 @@ def main():
         winsvc.run_agent()
         return
     # used by the installer (silent)
-    if "--install-service" in sys.argv:
-        winsvc.install_service()
-        return
-    if "--uninstall-service" in sys.argv:
-        winsvc.uninstall_service()
+    if "--install-service" in sys.argv or "--uninstall-service" in sys.argv:
+        try:
+            if "--install-service" in sys.argv:
+                winsvc.install_service()
+            else:
+                winsvc.uninstall_service()
+        except Exception as e:
+            winsvc.log(f"install/uninstall failed: {e!r}")
+            sys.exit(1)
         return
     if winsvc.IS_WIN and not winsvc.is_admin():
         if winsvc.relaunch_as_admin():
